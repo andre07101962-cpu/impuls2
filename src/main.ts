@@ -11,6 +11,15 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule);
 
+  // === CORS CONFIGURATION ===
+  // Critical for dynamic frontend environments (StackBlitz, Localhost, Cloud IDEs)
+  app.enableCors({
+    origin: true, // Reflects the request origin, allowing any domain to connect
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    credentials: true, // Allows sending Authorization headers and Cookies
+    allowedHeaders: 'Content-Type, Accept, Authorization',
+  });
+
   // Global Validation Pipe
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
