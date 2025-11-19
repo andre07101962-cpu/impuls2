@@ -1,0 +1,5 @@
+{
+  "name": "Impulse API",
+  "description": "Backend API for Impulse Telegram SaaS Platform using NestJS and Prisma.",
+  "requestFramePermissions": []
+}
