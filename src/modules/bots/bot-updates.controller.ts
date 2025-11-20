@@ -2,6 +2,7 @@
 import { Controller, Post, Body, Param, HttpCode, Logger } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { BotsService } from './bots.service';
+import { ChannelsService } from '../channels/channels.service';
 import axios from 'axios';
 
 @ApiTags('Bot Updates')
@@ -9,24 +10,37 @@ import axios from 'axios';
 export class BotUpdatesController {
   private readonly logger = new Logger(BotUpdatesController.name);
 
-  constructor(private botsService: BotsService) {}
+  constructor(
+    private botsService: BotsService,
+    private channelsService: ChannelsService, // Inject ChannelsService
+  ) {}
 
   @Post(':botId')
   @HttpCode(200)
   @ApiOperation({ summary: 'Handle Telegram Webhook for User Bots' })
   async handleUpdates(@Param('botId') botId: string, @Body() update: any) {
-    // Always return 200 to prevent Telegram from retrying infinite loops on error
     try {
-      if (!update.message || !update.message.text) {
-        return { status: 'ignored' };
+      // 1. Handle /start command
+      if (update.message && update.message.text) {
+        const text = update.message.text;
+        const chatId = update.message.chat.id;
+        if (text.trim() === '/start') {
+          await this.handleStartCommand(botId, chatId);
+        }
       }
 
-      const text = update.message.text;
-      const chatId = update.message.chat.id;
-
-      if (text.trim() === '/start') {
-        await this.handleStartCommand(botId, chatId);
+      // 2. Handle 'my_chat_member' (Bot added/removed as Admin)
+      // This is the Event-Driven Sync logic
+      if (update.my_chat_member) {
+        const { chat, new_chat_member } = update.my_chat_member;
+        
+        // Check if bot was promoted to Administrator
+        if (new_chat_member.status === 'administrator') {
+            this.logger.log(`Bot ${botId} promoted to admin in ${chat.title} (${chat.id})`);
+            await this.channelsService.registerChannelFromWebhook(botId, chat);
+        }
       }
+
     } catch (error) {
       this.logger.error(`Error handling webhook for bot ${botId}: ${error.message}`);
     }
@@ -35,13 +49,8 @@ export class BotUpdatesController {
   }
 
   private async handleStartCommand(botId: string, chatId: string | number) {
-    // 1. Get Bot & Token
     const { bot, token } = await this.botsService.getBotWithDecryptedToken(botId);
-
-    // 2. Get Welcome Message from Config
     const welcomeMessage = bot.config?.welcomeMessage || 'Hello! I am managed by Impulse.';
-
-    // 3. Send Message
     await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
       chat_id: chatId,
       text: welcomeMessage,
