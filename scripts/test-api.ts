@@ -17,7 +17,7 @@ async function runTests() {
 
   // --- HELPER ---
   async function test(name: string, fn: () => Promise<void>) {
-    process.stdout.write(`Testing ${name}... `);
+    (process as any).stdout.write(`Testing ${name}... `);
     try {
       await fn();
       console.log(GREEN + '✔ PASS' + RESET);

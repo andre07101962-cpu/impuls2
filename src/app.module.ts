@@ -1,8 +1,15 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { BullModule } from '@nestjs/bullmq'; // <--- ВАЖНО: Подключаем очереди
+
+// Модули
 import { AuthModule } from './modules/auth/auth.module';
 import { BotsModule } from './modules/bots/bots.module';
+import { ChannelsModule } from './modules/channels/channels.module'; // <--- Новый
+import { PublisherModule } from './modules/publisher/publisher.module'; // <--- Новый
+
+// Энтити (Таблицы)
 import { User } from './database/entities/user.entity';
 import { UserBot } from './database/entities/user-bot.entity';
 import { Channel } from './database/entities/channel.entity';
@@ -14,63 +21,73 @@ import { AdSlot } from './database/entities/ad-slot.entity';
 
 @Module({
   imports: [
-    // 1. Initialize Config Module first
+    // 1. Конфигурация (.env)
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['.env', '.env.local'], // Look for both files
+      envFilePath: ['.env', '.env.local'],
     }),
-    // 2. Initialize TypeORM asynchronously to wait for Config
+
+    // 2. База Данных (PostgreSQL / Supabase)
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
-        // Prefer DIRECT_URL (5432) for TypeORM synchronization/migrations
         const directUrl = configService.get<string>('DIRECT_URL');
         const poolerUrl = configService.get<string>('DATABASE_URL');
         
         const url = directUrl || poolerUrl;
         
         if (!url) {
-          throw new Error('❌ FATAL: Database URL is missing! Check your .env or .env.local file.');
+          throw new Error('❌ FATAL: Database URL is missing! Check your .env file.');
         }
 
-        // Mask password for logging
         const safeUrl = url.replace(/:([^:@]+)@/, ':****@');
         console.log(`✅ Connecting to Database via: ${safeUrl}`);
-        
-        if (!directUrl) {
-           console.warn('⚠️ WARNING: DIRECT_URL is missing. Using Pooler URL might fail for table creation.');
-        }
 
         return {
           type: 'postgres',
           url: url,
           entities: [
-            User, 
-            UserBot,
-            Channel,
-            Post,
-            ScheduledPublication,
-            Campaign,
-            Participant,
-            AdSlot
+            User, UserBot, Channel, Post, 
+            ScheduledPublication, Campaign, Participant, AdSlot
           ],
-          synchronize: false, // Disabled for stability with Supabase Pooler
-          ssl: {
-            rejectUnauthorized: false,
-          },
-          // CRITICAL: Settings for Transaction Pooler stability (Port 6543)
+          synchronize: false, // В продакшене всегда false, используем миграции
+          ssl: { rejectUnauthorized: false },
           extra: {
-            max: 10,                  // Limit pool size
+            max: 10,
             connectionTimeoutMillis: 5000,
             idleTimeoutMillis: 30000,
-            keepAlive: true,          // Prevent TCP drops
+            keepAlive: true,
           },
         };
       },
     }),
+
+    // 3. Очереди (Redis / BullMQ) - НОВОЕ
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => {
+        const redisUrl = configService.get<string>('REDIS_URL');
+        
+        if (!redisUrl) {
+           console.warn('⚠️ WARNING: REDIS_URL is missing! Scheduling will fail.');
+        }
+
+        return {
+          connection: {
+            url: redisUrl, // Например: rediss://default:password@...upstash.io:6379
+            family: 0, // Исправляет некоторые ошибки DNS в Node v18+
+          },
+        };
+      },
+    }),
+
+    // 4. Бизнес-модули
     AuthModule,
     BotsModule,
+    ChannelsModule, // <--- Подключили
+    PublisherModule, // <--- Подключили
   ],
   controllers: [],
   providers: [],
