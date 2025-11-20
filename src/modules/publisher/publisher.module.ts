@@ -8,7 +8,7 @@ import { Post } from '../../database/entities/post.entity';
 import { ScheduledPublication } from '../../database/entities/scheduled-publication.entity';
 import { Channel } from '../../database/entities/channel.entity';
 import { BotsModule } from '../bots/bots.module';
-import { AuthModule } from '../auth/auth.module'; 
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
@@ -16,8 +16,8 @@ import { AuthModule } from '../auth/auth.module';
     BullModule.registerQueue({
       name: 'publishing',
     }),
-    BotsModule,
-    AuthModule, 
+    BotsModule, // To decrypt tokens for publishing
+    AuthModule, // For AuthGuard
   ],
   controllers: [PublisherController],
   providers: [PublisherService, PublishingProcessor],

@@ -9,8 +9,8 @@ import { AuthModule } from '../auth/auth.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([Channel]),
-    BotsModule,
-    AuthModule, 
+    BotsModule, // To get bot tokens
+    AuthModule, // For AuthGuard
   ],
   controllers: [ChannelsController],
   providers: [ChannelsService],

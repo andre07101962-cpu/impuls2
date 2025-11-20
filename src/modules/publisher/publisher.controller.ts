@@ -1,8 +1,8 @@
-
-import { Controller, Post, Body } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiProperty } from '@nestjs/swagger';
+import { Controller, Post, Body, UseGuards } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { PublisherService } from './publisher.service';
 import { IsArray, IsString, IsNotEmpty, IsObject } from 'class-validator';
+import { AuthGuard } from '../../common/guards/auth.guard';
 
 class SchedulePostDto {
   @ApiProperty({ example: { text: "Hello World", media: "https://..." } })
@@ -20,6 +20,8 @@ class SchedulePostDto {
 }
 
 @ApiTags('Publisher')
+@ApiBearerAuth()
+@UseGuards(AuthGuard)
 @Controller('publisher')
 export class PublisherController {
   constructor(private publisherService: PublisherService) {}
