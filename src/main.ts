@@ -6,45 +6,58 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
 
+  // Fix BigInt for JSON
   (BigInt.prototype as any).toJSON = function () {
     return this.toString();
   };
 
   const app = await NestFactory.create(AppModule);
 
-  // === СПИСОК РАЗРЕШЕННЫХ ДОМЕНОВ ===
+  // === СПИСОК ТОЧНЫХ ДОМЕНОВ (Exact Match) ===
   const WHITELIST = [
     'https://impyls.onrender.com',
-    // 👇 ВСТАВИЛИ ТОТ ДОМЕН ИЗ ЛОГОВ (ваша Google среда):
-    'https://0is2htrksq6y5vtpgsrm2z5yy02aw5vt4xjkppxibnh40wrcm6-h833788197.scf.usercontent.goog',
-    'https://3vvomlh322bd67gde4qqggjqwy8qgmcg67cpeohmaqfownh0y1-h833788197.scf.usercontent.goog',
-    // 👇 Добавьте сюда реальный домен фронтенда, когда он появится (например, Vercel)
+    // Сюда потом добавишь реальный домен фронта (например, impyls.vercel.app)
   ];
 
-  // ИЗМЕНЕНИЕ: Используем свою переменную IS_DEV, так как Render может перезаписывать NODE_ENV
-  // Если в Environment Variables (на сайте) будет IS_DEV = true, включится режим разработки
-  const isDevMode = process.env.IS_DEV === 'true'; 
+  // === СПИСОК РАЗРЕШЕННЫХ ОКОНЧАНИЙ (Wildcard) ===
+  // Разрешаем всё, что заканчивается на эти строки
+  const ALLOWED_DOMAINS_SUFFIX = [
+    '.scf.usercontent.goog', // Google IDX / Cloud Shell
+    '.vercel.app',           // (Опционально) Разрешить все превью Vercel
+  ];
+
+  // Переменная для принудительного режима разработки
+  // Установи IS_DEV = true в Render Environment, чтобы пускать вообще всех
+  const isDevMode = process.env.IS_DEV === 'true';
 
   app.enableCors({
     origin: function (origin, callback) {
+      // 1. Разрешаем запросы без origin (Postman, серверные вызовы)
       if (!origin) return callback(null, true);
 
+      // 2. Если включен режим "ВСЕХ ПУСКАТЬ" (через переменную окружения)
       if (isDevMode) {
-        // === РЕЖИМ РАЗРАБОТКИ (ЛОГИРУЕМ ВСЕ) ===
         logger.log(`🔔 [CORS-DEV] Вход: ${origin}`);
-        if (!WHITELIST.includes(origin)) {
-          logger.warn(`⚠️ Добавь этот домен в WHITELIST для продакшена!`);
-        }
-        return callback(null, true); // Пускаем всех
-      } else {
-        // === БОЕВОЙ РЕЖИМ (ТОЛЬКО ПО СПИСКУ) ===
-        if (WHITELIST.includes(origin)) {
-          return callback(null, true);
-        } else {
-          logger.error(`⛔ [CORS-BLOCK] Блок: ${origin}`);
-          return callback(new Error('Not allowed by CORS'));
-        }
+        return callback(null, true);
       }
+
+      // 3. Проверка по Белому списку (точное совпадение)
+      if (WHITELIST.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // 4. Проверка по окончанию домена (для динамических адресов Google)
+      // Мы проверяем: заканчивается ли входящий адрес на '.scf.usercontent.goog'
+      const isAllowedSuffix = ALLOWED_DOMAINS_SUFFIX.some(suffix => origin.endsWith(suffix));
+      
+      if (isAllowedSuffix) {
+        logger.log(`✅ [CORS-DYNAMIC] Разрешен динамический домен: ${origin}`);
+        return callback(null, true);
+      }
+
+      // 5. Если ничего не подошло — блокируем
+      logger.error(`⛔ [CORS-BLOCK] Блок: ${origin}`);
+      return callback(new Error('Not allowed by CORS'));
     },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
@@ -63,7 +76,6 @@ async function bootstrap() {
   const port = process.env.PORT || 3000;
   await app.listen(port);
   
-  logger.log(`🚀 Режим: ${isDevMode ? 'DEVELOPMENT (Все разрешено)' : 'PRODUCTION (Строгий)'}`);
-  logger.log(`🚀 URL: ${await app.getUrl()}`);
+  logger.log(`🚀 Server running. Mode: ${isDevMode ? 'DEV (Open)' : 'PROD (Whitelisted)'}`);
 }
 bootstrap();
