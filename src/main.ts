@@ -11,14 +11,16 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule);
 
-  // === CORS CONFIGURATION ===
-  // Critical for dynamic frontend environments (StackBlitz, Localhost, Cloud IDEs)
-  app.enableCors({
-    origin: true, // Reflects the request origin, allowing any domain to connect
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    credentials: true, // Allows sending Authorization headers and Cookies
-    allowedHeaders: 'Content-Type, Accept, Authorization',
-  });
+// In your NestJS main.ts file:
+
+app.enableCors({
+  origin: [
+    'https://4fya2wywcafj8mjtrpwsmq1zfs7b1wrfvhe2ox5p3u7nwyuxue-h833788197.scf.usercontent.goog', // <--- ЭТО ВАШ ТЕКУЩИЙ ДОМЕН
+    'http://localhost:3000',
+    'https://impyls-frontend.onrender.com' // (Пример вашего будущего продакшен домена)
+  ],
+  credentials: true,
+});
 
   // Global Validation Pipe
   app.useGlobalPipes(new ValidationPipe({
