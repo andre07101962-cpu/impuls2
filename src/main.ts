@@ -5,54 +5,43 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
-  
-  // PATCH: Fix BigInt serialization for JSON
+
   (BigInt.prototype as any).toJSON = function () {
     return this.toString();
   };
 
   const app = await NestFactory.create(AppModule);
 
-  // === НАСТРОЙКИ ===
-  // Список доменов, которым разрешен доступ в ПРОДАКШЕНЕ
+  // === СПИСОК РАЗРЕШЕННЫХ ДОМЕНОВ ===
   const WHITELIST = [
-    'https://impyls.onrender.com', // Сам бэкенд (на всякий случай)
-    'http://localhost:3000',       // Локальная разработка
-    // Сюда ты добавишь домен своего фронта, когда увидишь его в логах
-    // Например: 'https://my-frontend.vercel.app'
+    'https://impyls.onrender.com',
+    // 👇 ВСТАВИЛИ ТОТ ДОМЕН ИЗ ЛОГОВ (ваша Google среда):
+    'https://0is2htrksq6y5vtpgsrm2z5yy02aw5vt4xjkppxibnh40wrcm6-h833788197.scf.usercontent.goog',
+    'https://3vvomlh322bd67gde4qqggjqwy8qgmcg67cpeohmaqfownh0y1-h833788197.scf.usercontent.goog',
+    // 👇 Добавьте сюда реальный домен фронтенда, когда он появится (например, Vercel)
   ];
 
-  // Проверка режима запуска (по умолчанию development, если не задано)
-  const isProduction = process.env.NODE_ENV === 'production';
+  // ИЗМЕНЕНИЕ: Используем свою переменную IS_DEV, так как Render может перезаписывать NODE_ENV
+  // Если в Environment Variables (на сайте) будет IS_DEV = true, включится режим разработки
+  const isDevMode = process.env.IS_DEV === 'true'; 
 
-  // === CORS CONFIGURATION ===
   app.enableCors({
     origin: function (origin, callback) {
-      // Разрешаем запросы без origin (например, из Postman или сервер-сервер)
-      if (!origin) {
-        return callback(null, true);
-      }
+      if (!origin) return callback(null, true);
 
-      if (!isProduction) {
-        // === РЕЖИМ РАЗРАБОТКИ (DEV) ===
-        // Логируем, кто стучится
-        logger.log(`🔔 [CORS-DEV] Входящий запрос от: ${origin}`);
-        
+      if (isDevMode) {
+        // === РЕЖИМ РАЗРАБОТКИ (ЛОГИРУЕМ ВСЕ) ===
+        logger.log(`🔔 [CORS-DEV] Вход: ${origin}`);
         if (!WHITELIST.includes(origin)) {
-          logger.warn(`⚠️ Этого домена НЕТ в белом списке!`);
-          logger.warn(`👉 Чтобы это работало в продакшене, добавь '${origin}' в массив WHITELIST в main.ts`);
-        } else {
-          logger.log(`✅ Домен в белом списке.`);
+          logger.warn(`⚠️ Добавь этот домен в WHITELIST для продакшена!`);
         }
-
-        // В режиме разработки разрешаем всем (true), чтобы не тормозить работу
-        return callback(null, true);
+        return callback(null, true); // Пускаем всех
       } else {
-        // === БОЕВОЙ РЕЖИМ (PROD) ===
+        // === БОЕВОЙ РЕЖИМ (ТОЛЬКО ПО СПИСКУ) ===
         if (WHITELIST.includes(origin)) {
           return callback(null, true);
         } else {
-          logger.error(`⛔ [CORS-BLOCK] Заблокирована попытка входа с: ${origin}`);
+          logger.error(`⛔ [CORS-BLOCK] Блок: ${origin}`);
           return callback(new Error('Not allowed by CORS'));
         }
       }
@@ -62,30 +51,19 @@ async function bootstrap() {
     allowedHeaders: 'Content-Type, Accept, Authorization',
   });
 
-  // Global Validation Pipe
-  app.useGlobalPipes(new ValidationPipe({
-    whitelist: true,
-    transform: true,
-    forbidNonWhitelisted: true,
-  }));
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
 
-  // Swagger Configuration
   const config = new DocumentBuilder()
     .setTitle('Impulse API')
-    .setDescription('The Impulse Telegram SaaS Platform API documentation')
     .setVersion('1.0')
-    .addTag('Auth')
-    .addTag('Bots')
     .build();
-    
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, document);
 
-  // Start Server
   const port = process.env.PORT || 3000;
   await app.listen(port);
   
-  logger.log(`🚀 Режим работы: ${isProduction ? 'PRODUCTION (Строгий)' : 'DEVELOPMENT (Логирование)'}`);
-  logger.log(`🚀 Application is running on: ${await app.getUrl()}`);
+  logger.log(`🚀 Режим: ${isDevMode ? 'DEVELOPMENT (Все разрешено)' : 'PRODUCTION (Строгий)'}`);
+  logger.log(`🚀 URL: ${await app.getUrl()}`);
 }
 bootstrap();
