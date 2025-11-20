@@ -4,11 +4,13 @@ import { ChannelsController } from './channels.controller';
 import { ChannelsService } from './channels.service';
 import { Channel } from '../../database/entities/channel.entity';
 import { BotsModule } from '../bots/bots.module';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Channel]),
     BotsModule,
+    AuthModule, 
   ],
   controllers: [ChannelsController],
   providers: [ChannelsService],
