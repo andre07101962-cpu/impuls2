@@ -1,8 +1,8 @@
 
-import { Controller, Post, Get, Body, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { BotsService } from './bots.service';
-import { IsString, IsNotEmpty } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsObject } from 'class-validator';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { CurrentUser } from '../../common/decorators/user.decorator';
 import { User } from '../../database/entities/user.entity';
@@ -12,6 +12,13 @@ class CreateBotDto {
   @IsString()
   @IsNotEmpty()
   token: string;
+}
+
+class UpdateBotConfigDto {
+  @ApiProperty({ example: 'Welcome to my shop!', description: 'Custom welcome message for /start' })
+  @IsString()
+  @IsOptional()
+  welcomeMessage?: string;
 }
 
 @ApiTags('Bots')
@@ -41,5 +48,15 @@ export class BotsController {
         status: newBot.status,
       },
     };
+  }
+
+  @Patch(':id/config')
+  @ApiOperation({ summary: 'Update bot configuration (e.g. welcome message)' })
+  async updateConfig(
+    @Param('id') id: string,
+    @Body() dto: UpdateBotConfigDto,
+    @CurrentUser() user: User
+  ) {
+    return this.botsService.updateBotConfig(id, user.id, dto);
   }
 }

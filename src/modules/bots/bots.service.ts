@@ -1,5 +1,5 @@
 
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UserBot, BotStatus } from '../../database/entities/user-bot.entity';
@@ -8,6 +8,10 @@ import axios from 'axios';
 
 @Injectable()
 export class BotsService {
+  private readonly logger = new Logger(BotsService.name);
+  // Hardcoded URL as requested, in production this should come from config
+  private readonly baseUrl = 'https://impyls.onrender.com';
+
   constructor(
     @InjectRepository(UserBot)
     private botRepository: Repository<UserBot>,
@@ -57,11 +61,16 @@ export class BotsService {
       tokenEncrypted: EncryptionUtil.encrypt(token),
       userId,
       status: BotStatus.ACTIVE,
-      config: {},
+      config: { welcomeMessage: 'Hello! I am managed by Impulse.' }, // Default config
       stats: {}
     });
 
-    return this.botRepository.save(newBot);
+    const savedBot = await this.botRepository.save(newBot);
+
+    // 4. Set Webhook
+    await this.setWebhook(token, savedBot.id);
+
+    return savedBot;
   }
 
   async getBotWithDecryptedToken(botId: string): Promise<{ bot: UserBot; token: string }> {
@@ -70,5 +79,28 @@ export class BotsService {
     if (bot.status !== BotStatus.ACTIVE) throw new BadRequestException('Bot is not active');
     const token = EncryptionUtil.decrypt(bot.tokenEncrypted);
     return { bot, token };
+  }
+
+  /**
+   * Update bot configuration (e.g. welcome message)
+   */
+  async updateBotConfig(botId: string, userId: string, updates: any) {
+    const bot = await this.botRepository.findOne({ where: { id: botId, userId } });
+    if (!bot) throw new NotFoundException('Bot not found or access denied');
+
+    // Merge existing config with updates
+    bot.config = { ...bot.config, ...updates };
+    return this.botRepository.save(bot);
+  }
+
+  private async setWebhook(token: string, botId: string) {
+    const webhookUrl = `${this.baseUrl}/bots/webhook/${botId}`;
+    try {
+      await axios.post(`https://api.telegram.org/bot${token}/setWebhook?url=${webhookUrl}`);
+      this.logger.log(`Webhook set for bot ${botId} -> ${webhookUrl}`);
+    } catch (e) {
+      this.logger.error(`Failed to set webhook for bot ${botId}: ${e.message}`);
+      // Non-blocking error, we still return the saved bot
+    }
   }
 }
