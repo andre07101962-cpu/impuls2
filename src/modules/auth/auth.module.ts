@@ -12,6 +12,6 @@ import { User } from '../../database/entities/user.entity';
   ],
   controllers: [AuthController, TelegramController],
   providers: [AuthService, TelegramService],
-  exports: [AuthService],
+  exports: [AuthService], // Required for AuthGuard in other modules
 })
 export class AuthModule {}
