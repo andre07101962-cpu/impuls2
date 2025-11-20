@@ -1,30 +1,36 @@
 
-import { Controller, Post, Body } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiProperty } from '@nestjs/swagger';
+import { Controller, Post, Get, Body, UseGuards } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { BotsService } from './bots.service';
 import { IsString, IsNotEmpty } from 'class-validator';
+import { AuthGuard } from '../../common/guards/auth.guard';
+import { CurrentUser } from '../../common/decorators/user.decorator';
+import { User } from '../../database/entities/user.entity';
 
 class CreateBotDto {
   @ApiProperty({ example: '123456:ABC...', description: 'Telegram Bot Token' })
   @IsString()
   @IsNotEmpty()
   token: string;
-  
-  @ApiProperty({ example: 'user-uuid-123', description: 'Owner User ID' })
-  @IsString()
-  @IsNotEmpty()
-  userId: string; 
 }
 
 @ApiTags('Bots')
+@ApiBearerAuth()
+@UseGuards(AuthGuard)
 @Controller('bots')
 export class BotsController {
   constructor(private botsService: BotsService) {}
 
+  @Get()
+  @ApiOperation({ summary: 'List all connected bots' })
+  async getBots(@CurrentUser() user: User) {
+    return this.botsService.getUserBots(user.id);
+  }
+
   @Post()
   @ApiOperation({ summary: 'Connect a new Telegram Bot (BYOB)' })
-  async addBot(@Body() dto: CreateBotDto) {
-    const newBot = await this.botsService.addBot(dto.token, dto.userId);
+  async addBot(@Body() dto: CreateBotDto, @CurrentUser() user: User) {
+    const newBot = await this.botsService.addBot(dto.token, user.id);
     
     return {
       success: true,

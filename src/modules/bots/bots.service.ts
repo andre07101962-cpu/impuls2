@@ -14,7 +14,17 @@ export class BotsService {
   ) {}
 
   /**
-   * Validates token with Telegram and saves to DB
+   * Get all bots belonging to a user
+   */
+  async getUserBots(userId: string): Promise<UserBot[]> {
+    return this.botRepository.find({
+      where: { userId },
+      order: { createdAt: 'DESC' }
+    });
+  }
+
+  /**
+   * Validates token with Telegram and saves to DB linked to user
    */
   async addBot(token: string, userId: string) {
     // 1. Validate token
@@ -47,30 +57,18 @@ export class BotsService {
       tokenEncrypted: EncryptionUtil.encrypt(token),
       userId,
       status: BotStatus.ACTIVE,
+      config: {},
+      stats: {}
     });
 
     return this.botRepository.save(newBot);
   }
 
-  /**
-   * Helper to get a bot and decrypt its token for internal use
-   */
   async getBotWithDecryptedToken(botId: string): Promise<{ bot: UserBot; token: string }> {
     const bot = await this.botRepository.findOne({ where: { id: botId } });
-    
-    if (!bot) {
-      throw new NotFoundException('Bot not found');
-    }
-
-    if (bot.status !== BotStatus.ACTIVE) {
-      throw new BadRequestException('Bot is not active');
-    }
-
+    if (!bot) throw new NotFoundException('Bot not found');
+    if (bot.status !== BotStatus.ACTIVE) throw new BadRequestException('Bot is not active');
     const token = EncryptionUtil.decrypt(bot.tokenEncrypted);
     return { bot, token };
-  }
-
-  async findOne(id: string): Promise<UserBot> {
-    return this.botRepository.findOne({ where: { id } });
   }
 }

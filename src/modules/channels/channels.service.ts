@@ -1,5 +1,5 @@
 
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Channel } from '../../database/entities/channel.entity';
@@ -17,20 +17,28 @@ export class ChannelsService {
   ) {}
 
   /**
-   * Checks if bot is admin in channel and returns info
+   * Get channels owned by any of the user's bots
+   */
+  async getUserChannels(userId: string) {
+    // Find channels where the owner bot belongs to the user
+    return this.channelRepository.createQueryBuilder('channel')
+      .leftJoinAndSelect('channel.bot', 'bot')
+      .where('bot.userId = :userId', { userId })
+      .getMany();
+  }
+
+  /**
+   * Checks if bot is admin and returns info
    */
   async previewChannel(botId: string, channelUsername: string) {
-    // 1. Get Decrypted Token
     const { bot, token } = await this.botsService.getBotWithDecryptedToken(botId);
     const apiUrl = `https://api.telegram.org/bot${token}`;
     
-    // Normalize username (must start with @ or be -100 ID)
     const chatId = channelUsername.startsWith('@') || channelUsername.startsWith('-100') 
       ? channelUsername 
       : `@${channelUsername}`;
 
     try {
-      // 2. Get Chat Info
       const chatRes = await axios.get(`${apiUrl}/getChat?chat_id=${chatId}`);
       const chat = chatRes.data.result;
 
@@ -38,43 +46,32 @@ export class ChannelsService {
         throw new BadRequestException('Target is not a channel or supergroup');
       }
 
-      // 3. Check Admin Rights
-      // We fetch administrators to see if our bot is one of them
+      // Check Admin Rights
       const adminsRes = await axios.get(`${apiUrl}/getChatAdministrators?chat_id=${chat.id}`);
       const admins = adminsRes.data.result;
-
       const botAdminEntry = admins.find((a: any) => a.user.username === bot.username);
 
       if (!botAdminEntry) {
-        throw new BadRequestException(`Bot @${bot.username} is not an administrator in this channel.`);
+        throw new BadRequestException(`Bot @${bot.username} is not an administrator.`);
       }
 
-      // Check specific permissions if needed (can_post_messages, etc.)
-      if (!botAdminEntry.can_post_messages && chat.type === 'channel') {
-        throw new BadRequestException('Bot does not have "Post Messages" permission.');
-      }
-
-      // 4. Return Preview
       return {
-        id: chat.id.toString(), // -100123456789
+        id: chat.id.toString(),
         title: chat.title,
         username: chat.username,
-        photoUrl: chat.photo ? await this.getFileLink(token, chat.photo.big_file_id) : null,
+        photoUrl: null, // Implement getFileLink if needed
         membersCount: await this.getMembersCount(apiUrl, chat.id),
       };
 
     } catch (error) {
-      this.logger.error(`Preview failed: ${error.message}`);
-      if (error instanceof BadRequestException) throw error;
-      throw new BadRequestException(`Failed to fetch channel info. Ensure bot is admin. details: ${error.response?.data?.description || error.message}`);
+        if (error instanceof BadRequestException) throw error;
+        throw new BadRequestException(`Failed to fetch channel: ${error.response?.data?.description || error.message}`);
     }
   }
 
   async addChannel(botId: string, channelId: string, title: string) {
     const existing = await this.channelRepository.findOne({ where: { id: channelId } });
-    if (existing) {
-        throw new BadRequestException('Channel already added.');
-    }
+    if (existing) throw new BadRequestException('Channel already added.');
 
     const channel = this.channelRepository.create({
         id: channelId,
@@ -86,16 +83,54 @@ export class ChannelsService {
     return this.channelRepository.save(channel);
   }
 
-  // --- Helpers ---
-
-  private async getFileLink(token: string, fileId: string): Promise<string | null> {
+  /**
+   * Tries to discover channels by checking bot updates
+   */
+  async syncChannels(botId: string) {
+    const { bot, token } = await this.botsService.getBotWithDecryptedToken(botId);
+    const apiUrl = `https://api.telegram.org/bot${token}`;
+    
+    let updates;
     try {
-      const res = await axios.get(`https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`);
-      const filePath = res.data.result.file_path;
-      return `https://api.telegram.org/file/bot${token}/${filePath}`;
+        const res = await axios.get(`${apiUrl}/getUpdates`);
+        updates = res.data.result;
     } catch (e) {
-      return null;
+        throw new BadRequestException('Failed to fetch updates from Telegram');
     }
+
+    const foundChannels = [];
+    
+    for (const update of updates) {
+        // Logic: Look for 'my_chat_member' (bot added to channel) or 'channel_post'
+        const chat = update.my_chat_member?.chat || update.channel_post?.chat;
+        
+        if (chat && (chat.type === 'channel' || chat.type === 'supergroup')) {
+            // Check if we already have it
+            const exists = await this.channelRepository.findOne({ where: { id: chat.id.toString() } });
+            if (!exists) {
+                // Verify admin status specifically
+                try {
+                    const adminsRes = await axios.get(`${apiUrl}/getChatAdministrators?chat_id=${chat.id}`);
+                    const admins = adminsRes.data.result;
+                    const isAdmin = admins.some((a: any) => a.user.username === bot.username);
+                    
+                    if (isAdmin) {
+                        const newChannel = await this.channelRepository.save({
+                            id: chat.id.toString(),
+                            title: chat.title || 'Untitled',
+                            ownerBotId: bot.id,
+                            settings: {}
+                        });
+                        foundChannels.push(newChannel);
+                    }
+                } catch (e) {
+                    // Ignore errors (bot might have been kicked)
+                }
+            }
+        }
+    }
+
+    return { synced: foundChannels.length, channels: foundChannels };
   }
 
   private async getMembersCount(apiUrl: string, chatId: string | number): Promise<number> {
