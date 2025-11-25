@@ -19,7 +19,9 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "db:check": "ts-node scripts/db-check.ts",
-    "test:api": "ts-node scripts/test-api.ts"
+    "test:api": "ts-node scripts/test-api.ts",
+    "trigger:bot": "ts-node scripts/trigger-bot.ts",
+    "set:webhook": "ts-node scripts/set-webhook.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.3.0",

@@ -65,14 +65,14 @@ Body:
 
 ## 📢 Module: Channels
 
-### Sync Channels (Recommended)
-Automatically finds channels where the bot is an admin.
+### Auto-Sync (Event Driven)
+We do not have a manual "Add Channel" button anymore.
+**How it works:**
+1. User adds their bot as Administrator to a Telegram Channel.
+2. Telegram sends a webhook to our server.
+3. Our server automatically adds the channel to the "My Channels" list.
+4. Frontend should poll `GET /channels` or offer a "Refresh" button.
 
-**POST** `/channels/sync`
+### Get My Channels
+**GET** `/channels`
 Headers: `Authorization: Bearer ...`
-Body:
-```json
-{
-  "botId": "uuid-of-the-bot"
-}
-```

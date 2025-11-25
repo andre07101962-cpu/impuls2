@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // Load env vars manually to be sure
-const envPath = path.resolve(__dirname, '../.env');
+const envPath = path.resolve(process.cwd(), '.env');
 if (fs.existsSync(envPath)) {
   dotenv.config({ path: envPath });
   console.log('📄 Loaded .env file');

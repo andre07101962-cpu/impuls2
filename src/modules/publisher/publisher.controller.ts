@@ -21,7 +21,7 @@ class SchedulePostDto {
 
 @ApiTags('Publisher')
 @ApiBearerAuth()
-@UseGuards(AuthGuard) // <--- FIXED: Protect this controller
+@UseGuards(AuthGuard)
 @Controller('publisher')
 export class PublisherController {
   constructor(private publisherService: PublisherService) {}

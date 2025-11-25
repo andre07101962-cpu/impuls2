@@ -8,7 +8,7 @@ import { Post } from '../../database/entities/post.entity';
 import { ScheduledPublication } from '../../database/entities/scheduled-publication.entity';
 import { Channel } from '../../database/entities/channel.entity';
 import { BotsModule } from '../bots/bots.module';
-import { AuthModule } from '../auth/auth.module'; // <--- FIXED: Needed for AuthGuard
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
