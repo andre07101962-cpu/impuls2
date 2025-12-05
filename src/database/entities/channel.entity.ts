@@ -12,6 +12,12 @@ export class Channel {
   @Column({ nullable: true })
   title: string;
 
+  @Column({ name: 'members_count', type: 'int', default: 0 })
+  membersCount: number;
+
+  @Column({ name: 'is_active', default: true })
+  isActive: boolean;
+
   @Column({ type: 'jsonb', default: {} })
   settings: any;
 

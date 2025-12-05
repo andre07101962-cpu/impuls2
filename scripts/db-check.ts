@@ -1,11 +1,11 @@
-
 import { Client } from 'pg';
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
 
 // Load env vars manually to be sure
-const envPath = path.resolve(process.cwd(), '.env');
+// Fix: Use path.resolve('.env') to avoid TS error with process.cwd() not existing on Process type
+const envPath = path.resolve('.env');
 if (fs.existsSync(envPath)) {
   dotenv.config({ path: envPath });
   console.log('📄 Loaded .env file');
