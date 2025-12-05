@@ -6,7 +6,8 @@ import { Repository } from 'typeorm';
 import { ScheduledPublication, PublicationStatus } from '../../database/entities/scheduled-publication.entity';
 import { Channel } from '../../database/entities/channel.entity';
 import { BotsService } from '../bots/bots.service';
-import axios from 'axios';
+import { Telegraf, TelegramError } from 'telegraf';
+import { InputMediaPhoto } from 'telegraf/types';
 
 @Processor('publishing', {
   limiter: {
@@ -43,35 +44,58 @@ export class PublishingProcessor extends WorkerHost {
     }
 
     try {
-      // 2. Decrypt Token
+      // 2. Initialize Telegraf
       const { token } = await this.botsService.getBotWithDecryptedToken(publication.channel.ownerBotId);
+      const bot = new Telegraf(token);
       
-      // 3. Prepare Payload
       const chatId = publication.channel.id;
       const content = publication.post.contentPayload; 
-      const apiUrl = `https://api.telegram.org/bot${token}`;
-
-      let res;
-
-      // Simple logic: Photo vs Text
-      if (content.media) {
-        res = await axios.post(`${apiUrl}/sendPhoto`, {
-          chat_id: chatId,
-          photo: content.media,
-          caption: content.text,
-          parse_mode: 'HTML'
-        });
-      } else {
-        res = await axios.post(`${apiUrl}/sendMessage`, {
-          chat_id: chatId,
-          text: content.text,
-          parse_mode: 'HTML'
-        });
+      
+      // 3. Construct Keyboard (if any)
+      let reply_markup = undefined;
+      if (content.buttons && Array.isArray(content.buttons)) {
+          // Assuming content.buttons is [[{text, url}]]
+          reply_markup = { inline_keyboard: content.buttons };
       }
 
-      // 4. Update Success
+      let resultMessage;
+
+      // 4. Send Content based on Type
+      // CASE A: Media Album (Multiple Images)
+      if (content.media && Array.isArray(content.media) && content.media.length > 1) {
+          const mediaGroup: InputMediaPhoto[] = content.media.map((url, index) => ({
+              type: 'photo',
+              media: url,
+              // Caption only goes on the first item in an album usually, or strictly defined
+              caption: index === 0 ? content.text : '', 
+              parse_mode: 'HTML'
+          }));
+          
+          const msgs = await bot.telegram.sendMediaGroup(chatId, mediaGroup);
+          resultMessage = msgs[0]; // Take the first message ID as reference
+      } 
+      // CASE B: Single Photo
+      else if (content.media && (typeof content.media === 'string' || (Array.isArray(content.media) && content.media.length === 1))) {
+          const photo = Array.isArray(content.media) ? content.media[0] : content.media;
+          resultMessage = await bot.telegram.sendPhoto(chatId, photo, {
+              caption: content.text,
+              parse_mode: 'HTML',
+              reply_markup
+          });
+      } 
+      // CASE C: Text Only
+      else {
+          resultMessage = await bot.telegram.sendMessage(chatId, content.text, {
+              parse_mode: 'HTML',
+              reply_markup,
+              // Disable web preview if explicitly requested, otherwise default
+              link_preview_options: { is_disabled: false }
+          });
+      }
+
+      // 5. Update Success
       publication.status = PublicationStatus.PUBLISHED;
-      publication.tgMessageId = res.data.result.message_id;
+      publication.tgMessageId = resultMessage.message_id.toString();
       publication.publishAt = new Date(); 
       await this.publicationRepository.save(publication);
 
@@ -80,28 +104,24 @@ export class PublishingProcessor extends WorkerHost {
     } catch (error: any) {
       this.logger.error(`Failed to publish ${publicationId}: ${error.message}`);
 
-      // Handle Telegram 429: Too Many Requests
-      if (error.response && error.response.status === 429) {
-        const retryAfter = error.response.data?.parameters?.retry_after || 5; // Default 5s if missing
+      // Handle Telegram Specific Errors via Telegraf types or Error checks
+      const retryAfter = error?.parameters?.retry_after;
+      
+      // Rate Limit (429)
+      if (retryAfter) {
         this.logger.warn(`Telegram Rate Limit hit. Retrying after ${retryAfter}s`);
-        
-        // Move job to delayed state to respect retry_after
-        await job.moveToDelayed(Date.now() + (retryAfter * 1000) + 100, job.token);
+        await job.moveToDelayed(Date.now() + (retryAfter * 1000) + 1000, job.token);
         return; 
       }
 
-      // Handle Telegram 403: Forbidden (Bot blocked or kicked)
-      if (error.response && error.response.status === 403) {
+      // Bot Blocked / Kicked (403)
+      if (error.response && error.response.error_code === 403) {
         this.logger.warn(`Bot was kicked from channel ${publication.channel.id}. Marking channel as inactive.`);
         
-        // Deactivate Channel
         await this.channelRepository.update(publication.channel.id, { isActive: false });
-
-        // Mark publication failed
+        
         publication.status = PublicationStatus.FAILED;
         await this.publicationRepository.save(publication);
-
-        // Do not retry
         throw new UnrecoverableError('Bot kicked from channel');
       }
       
@@ -109,7 +129,6 @@ export class PublishingProcessor extends WorkerHost {
       publication.status = PublicationStatus.FAILED;
       await this.publicationRepository.save(publication);
       
-      // Throwing error causes BullMQ to use standard backoff if configured, or fail
       throw error; 
     }
   }

@@ -12,6 +12,9 @@ export class Channel {
   @Column({ nullable: true })
   title: string;
 
+  @Column({ name: 'photo_url', nullable: true })
+  photoUrl: string;
+
   @Column({ name: 'members_count', type: 'int', default: 0 })
   membersCount: number;
 
