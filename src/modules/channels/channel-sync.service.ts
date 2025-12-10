@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Channel } from '../../database/entities/channel.entity';
 import { BotsService } from '../bots/bots.service';
+import { Telegraf } from 'telegraf';
 import axios from 'axios';
 
 @Injectable()
@@ -18,10 +19,9 @@ export class ChannelSyncService {
 
   @Cron(CronExpression.EVERY_HOUR)
   async syncSubscribers() {
-    this.logger.log('🔄 Starting Channel Statistics Sync...');
+    this.logger.log('🔄 Starting Channel Full Sync (Stats + Metadata)...');
 
     // 1. Fetch Active Channels
-    // In production, you might want to paginate this if you have thousands of channels
     const channels = await this.channelRepository.find({
       where: { isActive: true },
     });
@@ -34,26 +34,52 @@ export class ChannelSyncService {
     let updatedCount = 0;
     let errorCount = 0;
 
-    // 2. Iterate sequentially to avoid flooding CPU/Network
+    // 2. Iterate sequentially
     for (const channel of channels) {
       try {
         // Decrypt Token
         const { token } = await this.botsService.getBotWithDecryptedToken(channel.ownerBotId);
+        const bot = new Telegraf(token);
 
-        // Fetch Member Count
-        const response = await axios.get(`https://api.telegram.org/bot${token}/getChatMemberCount?chat_id=${channel.id}`);
-        const count = response.data.result;
+        // Fetch Full Info (Chat + Members)
+        const [chatInfo, membersCount] = await Promise.all([
+             bot.telegram.getChat(channel.id),
+             bot.telegram.getChatMembersCount(channel.id)
+        ]);
 
-        // Update DB
-        if (channel.membersCount !== count) {
-            await this.channelRepository.update(channel.id, { membersCount: count });
+        // Resolve Photo
+        let photoUrl = channel.photoUrl; // Keep old one by default
+        if (chatInfo.photo) {
+             try {
+                const link = await bot.telegram.getFileLink(chatInfo.photo.big_file_id);
+                photoUrl = link.toString();
+             } catch (e) {
+                // Ignore photo fetch errors
+             }
         }
-        updatedCount++;
+
+        // Check if anything changed
+        const titleChanged = (chatInfo as any).title !== channel.title;
+        const membersChanged = membersCount !== channel.membersCount;
+        const photoChanged = photoUrl !== channel.photoUrl;
+
+        if (titleChanged || membersChanged || photoChanged) {
+            await this.channelRepository.update(channel.id, { 
+                membersCount,
+                title: (chatInfo as any).title,
+                photoUrl
+            });
+            updatedCount++;
+        }
 
       } catch (error) {
         errorCount++;
-        // If bot is kicked (403) or chat not found (400), we could deactivate channel here too
-        if (axios.isAxiosError(error) && (error.response?.status === 403 || error.response?.status === 400)) {
+        // If bot is kicked (403) or chat not found (400), deactivate channel
+        // Telegraf errors have 'response' or 'code'
+        const errCode = (error as any).response?.error_code || (error as any).code;
+        
+        if (errCode === 403 || errCode === 400 || (error.message && error.message.includes('chat not found'))) {
+            this.logger.warn(`Bot kicked/removed from channel ${channel.id}. Deactivating...`);
             await this.channelRepository.update(channel.id, { isActive: false });
         }
       }
@@ -62,6 +88,6 @@ export class ChannelSyncService {
       await new Promise(resolve => setTimeout(resolve, 200));
     }
 
-    this.logger.log(`✅ Sync Complete. Updated: ${updatedCount}, Errors: ${errorCount}`);
+    this.logger.log(`✅ Sync Complete. Updated: ${updatedCount}, Errors/Deactivations: ${errorCount}`);
   }
 }

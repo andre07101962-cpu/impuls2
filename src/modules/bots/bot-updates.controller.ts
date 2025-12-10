@@ -1,4 +1,3 @@
-
 import { Controller, Post, Body, Param, HttpCode, Logger } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { BotsService } from './bots.service';
@@ -34,10 +33,16 @@ export class BotUpdatesController {
       if (update.my_chat_member) {
         const { chat, new_chat_member } = update.my_chat_member;
         
-        // Check if bot was promoted to Administrator
+        // A. Bot Promoted to Administrator -> ADD CHANNEL
         if (new_chat_member.status === 'administrator') {
             this.logger.log(`Bot ${botId} promoted to admin in ${chat.title} (${chat.id})`);
             await this.channelsService.registerChannelFromWebhook(botId, chat);
+        }
+
+        // B. Bot Kicked / Left / Restricted -> REMOVE CHANNEL
+        else if (['kicked', 'left', 'restricted'].includes(new_chat_member.status)) {
+            this.logger.warn(`Bot ${botId} removed from channel ${chat.title} (${chat.id}). Status: ${new_chat_member.status}`);
+            await this.channelsService.deactivateChannel(chat.id.toString());
         }
       }
 

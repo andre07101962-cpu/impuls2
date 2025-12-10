@@ -43,6 +43,18 @@ class SyncChannelsDto {
   botId: string;
 }
 
+class VerifyChannelDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  botId: string;
+
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  channelId: string;
+}
+
 @ApiTags('Channels')
 @ApiBearerAuth()
 @UseGuards(AuthGuard)
@@ -54,6 +66,13 @@ export class ChannelsController {
   @ApiOperation({ summary: 'List all channels managed by user bots' })
   async getChannels(@CurrentUser() user: User) {
     return this.channelsService.getUserChannels(user.id);
+  }
+
+  @Post('verify')
+  @ApiOperation({ summary: 'Full Health Check: Verifies Admin rights, updates stats/photo' })
+  async verify(@Body() dto: VerifyChannelDto, @CurrentUser() user: User) {
+    // This performs a "Full Circle" check
+    return this.channelsService.verifyChannelHealth(user.id, dto.botId, dto.channelId);
   }
 
   @Post('sync')
