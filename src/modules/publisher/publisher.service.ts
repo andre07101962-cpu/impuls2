@@ -22,6 +22,27 @@ export class PublisherService {
     @InjectQueue('publishing') private publishingQueue: Queue,
   ) {}
 
+  /**
+   * Fetch all publications for a specific user to populate the Calendar.
+   * This joins ScheduledPublication -> Channel -> Bot -> User.
+   */
+  async getPublicationsByUser(userId: string) {
+    return this.publicationRepository.find({
+      where: {
+        channel: {
+          bot: {
+            userId: userId
+          }
+        }
+      },
+      relations: ['channel', 'post'],
+      order: {
+        publishAt: 'DESC', // Newest first, frontend can reverse if needed
+      },
+      take: 200 // Limit to 200 latest for performance (Pagination can be added later)
+    });
+  }
+
   async schedulePost(content: any, channelIds: string[], publishAtIso: string) {
     this.logger.log(`Incoming Schedule Request for ${channelIds.length} channels at ${publishAtIso}`);
 
@@ -47,6 +68,12 @@ export class PublisherService {
         const channels = await this.channelRepository.findBy({
             id: In(cleanChannelIds) 
         });
+
+        // Check for active status
+        const inactiveChannels = channels.filter(c => !c.isActive);
+        if (inactiveChannels.length > 0) {
+            throw new BadRequestException(`Cannot schedule to inactive channels: ${inactiveChannels.map(c => c.title).join(', ')}. Please verify/re-add bot.`);
+        }
 
         if (channels.length !== cleanChannelIds.length) {
             const foundIds = channels.map(c => c.id);
