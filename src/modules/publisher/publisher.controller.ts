@@ -1,8 +1,7 @@
-
-import { Controller, Post, Get, Body, UseGuards } from '@nestjs/common';
+import { Controller, Post, Patch, Get, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { PublisherService } from './publisher.service';
-import { IsArray, IsString, IsNotEmpty, IsObject } from 'class-validator';
+import { IsArray, IsString, IsNotEmpty, IsObject, IsOptional } from 'class-validator';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { CurrentUser } from '../../common/decorators/user.decorator';
 import { User } from '../../database/entities/user.entity';
@@ -22,6 +21,23 @@ class SchedulePostDto {
   publishAt: string;
 }
 
+class EditPostDto {
+  @ApiProperty({ required: false })
+  @IsObject()
+  @IsOptional()
+  content?: any;
+
+  @ApiProperty({ required: false })
+  @IsArray()
+  @IsOptional()
+  channelIds?: string[];
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  publishAt?: string;
+}
+
 @ApiTags('Publisher')
 @ApiBearerAuth()
 @UseGuards(AuthGuard)
@@ -39,5 +55,12 @@ export class PublisherController {
   @ApiOperation({ summary: 'Schedule a post for multiple channels' })
   schedule(@Body() dto: SchedulePostDto) {
     return this.publisherService.schedulePost(dto.content, dto.channelIds, dto.publishAt);
+  }
+
+  @Patch('schedule/:id')
+  @ApiOperation({ summary: 'Edit a scheduled post (Time, Content, or Channels)' })
+  edit(@Param('id') id: string, @Body() dto: EditPostDto) {
+    // The ID param here refers to the POST ID (the parent entity), not a single publication
+    return this.publisherService.editScheduledPost(id, dto);
   }
 }

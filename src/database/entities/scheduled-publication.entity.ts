@@ -26,6 +26,10 @@ export class ScheduledPublication {
   @Column({ type: 'enum', enum: PublicationStatus, default: PublicationStatus.SCHEDULED })
   status: PublicationStatus;
 
+  // New field to track the BullMQ Job ID
+  @Column({ name: 'job_id', nullable: true })
+  jobId: string;
+
   @Column({ name: 'channel_id', type: 'bigint' })
   channelId: string;
 

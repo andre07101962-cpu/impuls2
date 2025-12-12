@@ -1,9 +1,8 @@
-
-import { Injectable, BadRequestException, InternalServerErrorException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository, In, Not } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
+import { Queue, Job } from 'bullmq';
 import { Post } from '../../database/entities/post.entity';
 import { ScheduledPublication, PublicationStatus } from '../../database/entities/scheduled-publication.entity';
 import { Channel } from '../../database/entities/channel.entity';
@@ -24,7 +23,6 @@ export class PublisherService {
 
   /**
    * Fetch all publications for a specific user to populate the Calendar.
-   * This joins ScheduledPublication -> Channel -> Bot -> User.
    */
   async getPublicationsByUser(userId: string) {
     return this.publicationRepository.find({
@@ -37,9 +35,9 @@ export class PublisherService {
       },
       relations: ['channel', 'post'],
       order: {
-        publishAt: 'DESC', // Newest first, frontend can reverse if needed
+        publishAt: 'DESC',
       },
-      take: 200 // Limit to 200 latest for performance (Pagination can be added later)
+      take: 200
     });
   }
 
@@ -49,51 +47,34 @@ export class PublisherService {
     try {
         const publishDate = new Date(publishAtIso);
 
-        // 1. Strict Date Validation (Fixes NaN Error 500)
         if (isNaN(publishDate.getTime())) {
             throw new BadRequestException('Invalid date format provided for publishAt');
         }
 
-        // 2. Create Post (Template)
         const post = this.postRepository.create({
           contentPayload: content,
           name: `Post ${new Date().toISOString()}`,
         });
         await this.postRepository.save(post);
 
-        // 3. Validate Channels
-        // Fix: Explicitly confirm these are strings for BigInt columns to avoid driver confusion
         const cleanChannelIds = channelIds.map(id => String(id));
-        
-        const channels = await this.channelRepository.findBy({
-            id: In(cleanChannelIds) 
-        });
+        const channels = await this.channelRepository.findBy({ id: In(cleanChannelIds) });
 
-        // Check for active status
         const inactiveChannels = channels.filter(c => !c.isActive);
         if (inactiveChannels.length > 0) {
-            throw new BadRequestException(`Cannot schedule to inactive channels: ${inactiveChannels.map(c => c.title).join(', ')}. Please verify/re-add bot.`);
+            throw new BadRequestException(`Cannot schedule to inactive channels: ${inactiveChannels.map(c => c.title).join(', ')}.`);
         }
 
         if (channels.length !== cleanChannelIds.length) {
             const foundIds = channels.map(c => c.id);
             const missing = cleanChannelIds.filter(id => !foundIds.includes(id));
-            this.logger.warn(`Channels not found: ${missing.join(', ')}`);
             throw new BadRequestException(`Channels not found: ${missing.join(', ')}`);
         }
 
-        // 4. Create Publications & Schedule Jobs
         const publications = [];
         const now = Date.now();
-
-        // Fix: Robust Delay Calculation (Prevents Negative Delay Crash)
         let delay = publishDate.getTime() - now;
-        
-        // If date is in the past, send immediately (delay = 0)
-        if (delay < 0) {
-            delay = 0;
-            this.logger.warn(`⚠️ Publish time is in the past (${publishAtIso}). Scheduling for immediate execution.`);
-        }
+        if (delay < 0) delay = 0;
 
         for (const channel of channels) {
           const pub = this.publicationRepository.create({
@@ -103,28 +84,33 @@ export class PublisherService {
             status: PublicationStatus.SCHEDULED,
           });
           await this.publicationRepository.save(pub);
-          publications.push(pub);
-
-          // Add to Bull Queue
+          
           try {
-              await this.publishingQueue.add(
+              // Save the BullMQ Job
+              const job = await this.publishingQueue.add(
                 'send-post', 
                 { publicationId: pub.id },
                 { 
                     delay: delay, 
                     removeOnComplete: true,
-                    attempts: 3, // Retry 3 times on failure
+                    attempts: 3,
                     backoff: { type: 'exponential', delay: 1000 }
                 }
               );
+
+              // Update DB with Job ID for future edits/cancellation
+              if (job && job.id) {
+                  pub.jobId = job.id;
+                  await this.publicationRepository.save(pub);
+              }
+              
+              publications.push(pub);
+
           } catch (queueError) {
-              this.logger.error(`CRITICAL: Redis/BullMQ failed. Is REDIS_URL set? Error: ${queueError.message}`);
-              // We rollback (or at least fail hard here so we know)
-              throw new InternalServerErrorException(`Scheduling Queue is offline: ${queueError.message}`);
+              this.logger.error(`CRITICAL: Redis/BullMQ failed. Error: ${queueError.message}`);
+              throw new InternalServerErrorException(`Scheduling Queue is offline`);
           }
         }
-
-        this.logger.log(`✅ Successfully scheduled ${publications.length} posts. Delay: ${delay}ms`);
 
         return {
           success: true,
@@ -134,16 +120,137 @@ export class PublisherService {
         };
 
     } catch (error) {
-        // If it's already an HTTP exception (e.g. BadRequest), rethrow it
-        if (error.status && error.status !== 500) {
-            throw error;
-        }
-        
-        // Log the REAL error for the backend developer
+        if (error.status && error.status !== 500) throw error;
         this.logger.error(`❌ SCHEDULE FAILED: ${error.message}`, error.stack);
-        
-        // Return a generic error to frontend, but now we have logs
-        throw new InternalServerErrorException('Server failed to schedule post. Check backend logs.');
+        throw new InternalServerErrorException('Server failed to schedule post.');
     }
+  }
+
+  async editScheduledPost(postId: string, dto: { publishAt?: string; channelIds?: string[]; content?: any }) {
+    this.logger.log(`Editing Post ${postId}`);
+
+    const post = await this.postRepository.findOne({ 
+        where: { id: postId },
+        relations: ['publications', 'publications.channel']
+    });
+
+    if (!post) throw new NotFoundException('Post not found');
+
+    // 1. Status Check: STRICT
+    // If ANY publication is already published or failed, we block editing to maintain consistency (or simple logic for now).
+    const isLocked = post.publications.some(p => p.status !== PublicationStatus.SCHEDULED);
+    if (isLocked) {
+        throw new BadRequestException('Cannot edit this post: One or more channels have already published or failed. Delete and recreate if necessary.');
+    }
+
+    // 2. Update Content
+    if (dto.content) {
+        post.contentPayload = dto.content;
+        await this.postRepository.save(post);
+    }
+
+    const newPublishDate = dto.publishAt ? new Date(dto.publishAt) : null;
+    if (newPublishDate && isNaN(newPublishDate.getTime())) {
+        throw new BadRequestException('Invalid publishAt date');
+    }
+
+    // 3. Reconcile Channels (Diffing)
+    if (dto.channelIds) {
+        const cleanIds = dto.channelIds.map(String);
+        const existingChannelIds = post.publications.map(p => p.channelId);
+
+        // A. Identify Removed Channels
+        const toRemove = post.publications.filter(p => !cleanIds.includes(p.channelId));
+        
+        for (const pub of toRemove) {
+            await this.removeJobAndPublication(pub);
+        }
+
+        // B. Identify New Channels
+        const toAddIds = cleanIds.filter(id => !existingChannelIds.includes(id));
+        if (toAddIds.length > 0) {
+            // Validate new channels
+            const newChannels = await this.channelRepository.findBy({ id: In(toAddIds) });
+            // Logic similar to schedulePost, but only for new ones
+            const targetDate = newPublishDate || post.publications[0]?.publishAt || new Date();
+            
+            for (const channel of newChannels) {
+                if (!channel.isActive) continue; // Skip inactive
+
+                const pub = this.publicationRepository.create({
+                    post,
+                    channel,
+                    publishAt: targetDate,
+                    status: PublicationStatus.SCHEDULED,
+                });
+                await this.publicationRepository.save(pub);
+                await this.scheduleJobForPublication(pub, targetDate);
+            }
+        }
+    }
+
+    // 4. Reschedule Existing (if time changed)
+    if (newPublishDate) {
+        // Reload publications to get remaining ones after delete
+        const remainingPubs = await this.publicationRepository.find({ where: { postId: post.id } });
+        
+        for (const pub of remainingPubs) {
+            // Remove old job
+            if (pub.jobId) {
+                try {
+                    const job = await Job.fromId(this.publishingQueue, pub.jobId);
+                    if (job) await job.remove();
+                } catch (e) {
+                    this.logger.warn(`Could not remove old job ${pub.jobId}: ${e.message}`);
+                }
+            }
+            
+            // Add new job
+            pub.publishAt = newPublishDate;
+            await this.publicationRepository.save(pub);
+            await this.scheduleJobForPublication(pub, newPublishDate);
+        }
+    }
+
+    return { success: true, postId };
+  }
+
+  // Helper to remove DB row and BullMQ job
+  private async removeJobAndPublication(pub: ScheduledPublication) {
+      if (pub.jobId) {
+          try {
+              const job = await Job.fromId(this.publishingQueue, pub.jobId);
+              if (job) await job.remove();
+          } catch (e) {
+              this.logger.warn(`Failed to remove job ${pub.jobId} during edit: ${e.message}`);
+          }
+      }
+      await this.publicationRepository.remove(pub);
+  }
+
+  // Helper to add BullMQ job
+  private async scheduleJobForPublication(pub: ScheduledPublication, date: Date) {
+      const now = Date.now();
+      let delay = date.getTime() - now;
+      if (delay < 0) delay = 0;
+
+      try {
+        const job = await this.publishingQueue.add(
+            'send-post', 
+            { publicationId: pub.id },
+            { 
+                delay, 
+                removeOnComplete: true,
+                attempts: 3,
+                backoff: { type: 'exponential', delay: 1000 }
+            }
+        );
+        if (job && job.id) {
+            pub.jobId = job.id;
+            await this.publicationRepository.save(pub);
+        }
+      } catch (e) {
+          this.logger.error(`Failed to reschedule job for ${pub.id}: ${e.message}`);
+      }
   }
 }
