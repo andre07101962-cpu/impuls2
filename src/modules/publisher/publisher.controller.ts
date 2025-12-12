@@ -1,15 +1,35 @@
 import { Controller, Post, Patch, Get, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { PublisherService } from './publisher.service';
-import { IsArray, IsString, IsNotEmpty, IsObject, IsOptional } from 'class-validator';
+import { IsArray, IsString, IsNotEmpty, IsObject, IsOptional, IsEnum } from 'class-validator';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { CurrentUser } from '../../common/decorators/user.decorator';
 import { User } from '../../database/entities/user.entity';
 
+// We duplicate the Enum here for Swagger clarity
+enum PostType {
+  POST = 'post',
+  STORY = 'story',
+  PAID_MEDIA = 'paid_media',
+}
+
 class SchedulePostDto {
-  @ApiProperty({ example: { text: "Hello World", media: "https://..." } })
+  @ApiProperty({ 
+    example: { 
+        text: "Hidden Content", 
+        media: ["https://..."], 
+        paid_config: { star_count: 50 },
+        options: { has_spoiler: true }
+    },
+    description: "Supports standard posts, stories, and paid media objects"
+  })
   @IsObject()
   content: any;
+
+  @ApiProperty({ enum: PostType, required: false, default: PostType.POST })
+  @IsOptional()
+  @IsEnum(PostType)
+  type?: PostType;
 
   @ApiProperty({ example: ['-100123456789'] })
   @IsArray()
@@ -52,15 +72,20 @@ export class PublisherController {
   }
 
   @Post('schedule')
-  @ApiOperation({ summary: 'Schedule a post for multiple channels' })
+  @ApiOperation({ summary: 'Schedule a post (Feed, Story, or Paid Media)' })
   schedule(@Body() dto: SchedulePostDto) {
-    return this.publisherService.schedulePost(dto.content, dto.channelIds, dto.publishAt);
+    // Inject the 'type' into the content payload for persistence if not already there
+    const contentWithType = { ...dto.content, type: dto.type || PostType.POST };
+    
+    // We pass the raw content (which now includes type) to the service
+    // The service saves this whole blob into post.contentPayload
+    // However, we also need to save post.type in the entity column for filtering
+    return this.publisherService.schedulePost(contentWithType, dto.channelIds, dto.publishAt);
   }
 
   @Patch('schedule/:id')
   @ApiOperation({ summary: 'Edit a scheduled post (Time, Content, or Channels)' })
   edit(@Param('id') id: string, @Body() dto: EditPostDto) {
-    // The ID param here refers to the POST ID (the parent entity), not a single publication
     return this.publisherService.editScheduledPost(id, dto);
   }
 }

@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, Not } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue, Job } from 'bullmq';
-import { Post } from '../../database/entities/post.entity';
+import { Post, PostType } from '../../database/entities/post.entity';
 import { ScheduledPublication, PublicationStatus } from '../../database/entities/scheduled-publication.entity';
 import { Channel } from '../../database/entities/channel.entity';
 
@@ -21,9 +21,6 @@ export class PublisherService {
     @InjectQueue('publishing') private publishingQueue: Queue,
   ) {}
 
-  /**
-   * Fetch all publications for a specific user to populate the Calendar.
-   */
   async getPublicationsByUser(userId: string) {
     return this.publicationRepository.find({
       where: {
@@ -51,9 +48,15 @@ export class PublisherService {
             throw new BadRequestException('Invalid date format provided for publishAt');
         }
 
+        // Determine Type from content or default to POST
+        const type = (content.type && Object.values(PostType).includes(content.type)) 
+            ? content.type 
+            : PostType.POST;
+
         const post = this.postRepository.create({
           contentPayload: content,
-          name: `Post ${new Date().toISOString()}`,
+          type: type, 
+          name: `${type.toUpperCase()} ${new Date().toISOString()}`,
         });
         await this.postRepository.save(post);
 
@@ -86,7 +89,6 @@ export class PublisherService {
           await this.publicationRepository.save(pub);
           
           try {
-              // Save the BullMQ Job
               const job = await this.publishingQueue.add(
                 'send-post', 
                 { publicationId: pub.id },
@@ -98,7 +100,6 @@ export class PublisherService {
                 }
               );
 
-              // Update DB with Job ID for future edits/cancellation
               if (job && job.id) {
                   pub.jobId = job.id;
                   await this.publicationRepository.save(pub);
@@ -136,16 +137,17 @@ export class PublisherService {
 
     if (!post) throw new NotFoundException('Post not found');
 
-    // 1. Status Check: STRICT
-    // If ANY publication is already published or failed, we block editing to maintain consistency (or simple logic for now).
     const isLocked = post.publications.some(p => p.status !== PublicationStatus.SCHEDULED);
     if (isLocked) {
         throw new BadRequestException('Cannot edit this post: One or more channels have already published or failed. Delete and recreate if necessary.');
     }
 
-    // 2. Update Content
     if (dto.content) {
         post.contentPayload = dto.content;
+        // If content changes type, update it
+        if (dto.content.type) {
+             post.type = dto.content.type;
+        }
         await this.postRepository.save(post);
     }
 
@@ -154,28 +156,23 @@ export class PublisherService {
         throw new BadRequestException('Invalid publishAt date');
     }
 
-    // 3. Reconcile Channels (Diffing)
     if (dto.channelIds) {
         const cleanIds = dto.channelIds.map(String);
         const existingChannelIds = post.publications.map(p => p.channelId);
 
-        // A. Identify Removed Channels
         const toRemove = post.publications.filter(p => !cleanIds.includes(p.channelId));
         
         for (const pub of toRemove) {
             await this.removeJobAndPublication(pub);
         }
 
-        // B. Identify New Channels
         const toAddIds = cleanIds.filter(id => !existingChannelIds.includes(id));
         if (toAddIds.length > 0) {
-            // Validate new channels
             const newChannels = await this.channelRepository.findBy({ id: In(toAddIds) });
-            // Logic similar to schedulePost, but only for new ones
             const targetDate = newPublishDate || post.publications[0]?.publishAt || new Date();
             
             for (const channel of newChannels) {
-                if (!channel.isActive) continue; // Skip inactive
+                if (!channel.isActive) continue; 
 
                 const pub = this.publicationRepository.create({
                     post,
@@ -189,13 +186,10 @@ export class PublisherService {
         }
     }
 
-    // 4. Reschedule Existing (if time changed)
     if (newPublishDate) {
-        // Reload publications to get remaining ones after delete
         const remainingPubs = await this.publicationRepository.find({ where: { postId: post.id } });
         
         for (const pub of remainingPubs) {
-            // Remove old job
             if (pub.jobId) {
                 try {
                     const job = await Job.fromId(this.publishingQueue, pub.jobId);
@@ -205,7 +199,6 @@ export class PublisherService {
                 }
             }
             
-            // Add new job
             pub.publishAt = newPublishDate;
             await this.publicationRepository.save(pub);
             await this.scheduleJobForPublication(pub, newPublishDate);
@@ -215,7 +208,6 @@ export class PublisherService {
     return { success: true, postId };
   }
 
-  // Helper to remove DB row and BullMQ job
   private async removeJobAndPublication(pub: ScheduledPublication) {
       if (pub.jobId) {
           try {
@@ -228,7 +220,6 @@ export class PublisherService {
       await this.publicationRepository.remove(pub);
   }
 
-  // Helper to add BullMQ job
   private async scheduleJobForPublication(pub: ScheduledPublication, date: Date) {
       const now = Date.now();
       let delay = date.getTime() - now;

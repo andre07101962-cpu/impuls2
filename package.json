@@ -19,6 +19,8 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "db:check": "ts-node scripts/db-check.ts",
+    "db:inspect": "ts-node scripts/inspect-schema.ts",
+    "db:fix": "ts-node scripts/fix-db-schema.ts",
     "test:api": "ts-node scripts/test-api.ts",
     "trigger:bot": "ts-node scripts/trigger-bot.ts",
     "set:webhook": "ts-node scripts/set-webhook.ts"

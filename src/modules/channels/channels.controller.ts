@@ -1,8 +1,7 @@
-
-import { Controller, Post, Get, Body, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { ChannelsService } from './channels.service';
-import { IsString, IsNotEmpty } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { CurrentUser } from '../../common/decorators/user.decorator';
 import { User } from '../../database/entities/user.entity';
@@ -55,6 +54,45 @@ class VerifyChannelDto {
   channelId: string;
 }
 
+class CreateInviteDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  botId: string;
+
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  channelId: string;
+
+  @ApiProperty({ required: false, example: 'Campaign #1' })
+  @IsString()
+  @IsOptional()
+  name?: string;
+}
+
+class UpdateProfileDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  botId: string;
+
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  channelId: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  title?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  description?: string;
+}
+
 @ApiTags('Channels')
 @ApiBearerAuth()
 @UseGuards(AuthGuard)
@@ -71,16 +109,27 @@ export class ChannelsController {
   @Post('verify')
   @ApiOperation({ summary: 'Full Health Check: Verifies Admin rights, updates stats/photo' })
   async verify(@Body() dto: VerifyChannelDto, @CurrentUser() user: User) {
-    // This performs a "Full Circle" check
     return this.channelsService.verifyChannelHealth(user.id, dto.botId, dto.channelId);
+  }
+
+  @Post('invite-link')
+  @ApiOperation({ summary: 'Create a tracked invite link' })
+  async createInvite(@Body() dto: CreateInviteDto, @CurrentUser() user: User) {
+    return this.channelsService.createInviteLink(user.id, dto.botId, dto.channelId, dto.name);
+  }
+
+  @Patch('profile')
+  @ApiOperation({ summary: 'Update Channel Title or Description' })
+  async updateProfile(@Body() dto: UpdateProfileDto, @CurrentUser() user: User) {
+    return this.channelsService.updateChannelProfile(user.id, dto.botId, dto.channelId, {
+      title: dto.title,
+      description: dto.description
+    });
   }
 
   @Post('sync')
   @ApiOperation({ summary: 'Auto-discover channels from Bot Updates' })
   async sync(@Body() dto: SyncChannelsDto) {
-    // Check if bot belongs to user is handled inside service logic conceptually, 
-    // but ideally we verify ownership here or in service. Service verifies bot exists.
-    // TODO: Add check in service that botId belongs to user.
     return this.channelsService.syncChannels(dto.botId);
   }
 

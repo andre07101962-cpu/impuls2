@@ -1,7 +1,7 @@
 
 # 📘 Impulse API — Ultimate Frontend Developer Guide
 
-**Version:** 2.1 (Added Verification)
+**Version:** 3.1 (Stories, Paid Media & Admin Tools)
 **Base URL:** `https://impyls.onrender.com` (or `http://localhost:3000` for local dev)  
 **Auth Strategy:** Telegram-Native (No passwords, No JWT).
 
@@ -50,83 +50,33 @@ Create a form accepting `Telegram ID` and `Token`.
     Authorization: Bearer <TOKEN_FROM_LOCAL_STORAGE>
     ```
 
-### Step 4: Verify Session (Get Profile)
-`GET /auth/me`
-*   Returns the user object if the token is valid.
-*   Returns `401 Unauthorized` if invalid (redirect to login).
-
 ---
 
-## 2. 🤖 Bots Module (BYOB - Bring Your Own Bot)
-
-Users connect their own bots (via BotFather) to manage their channels.
+## 2. 🤖 Bots Module (BYOB)
 
 ### List User Bots
 `GET /bots`
-*   Returns an array of connected bots.
 
 ### Connect New Bot
 `POST /bots`
-*   User pastes a token from BotFather.
-*   Backend validates it immediately with Telegram.
-
-**Payload:**
 ```json
 {
   "token": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 }
 ```
 
-### Update Bot Config
-`PATCH /bots/:id/config`
-*   Update the welcome message sent when people start the *user's* bot.
-
-**Payload:**
-```json
-{
-  "welcomeMessage": "Welcome to my awesome shop! 🚀"
-}
-```
-
 ---
 
-## 3. 📢 Channels Module
+## 3. 📢 Channels & Admin Tools
 
-**⚠️ CRITICAL UI/UX NOTE:**
-There is **NO "Add Channel" button** where the user types a Channel ID.
-Instead, we use **Auto-Discovery**.
-
-### How to add a channel:
-1.  User goes to Telegram.
-2.  User adds their Bot (from Section 2) as an **Administrator** to a Channel.
-3.  Telegram sends a webhook to Backend.
-4.  Backend automatically creates the channel in the DB.
-5.  Frontend just needs to refresh the list.
+**⚠️ Discovery:** Channels appear automatically when the user adds their bot as an Admin.
 
 ### List Channels
 `GET /channels`
 
-**Response:**
-```json
-[
-  {
-    "id": "-1001234567890",
-    "title": "My News Channel",
-    "photoUrl": "https://api.telegram.org/file/...", // Can be null
-    "membersCount": 5420,
-    "isActive": true,
-    "bot": {
-        "username": "my_assistant_bot" // The bot managing this channel
-    }
-  }
-]
-```
-
-### 🆕 Manual Verification (Full Health Check)
-Use this when the user clicks a "Verify" or "Refresh Status" button on a specific channel. This performs a complete circle check (Permissions, Stats, Avatar).
-
-**Endpoint:** `POST /channels/verify`
-**Payload:**
+### 🆕 Verify Channel Health (Sync)
+Forces a check of Admin permissions, updates subscriber count and avatar.
+`POST /channels/verify`
 ```json
 {
   "botId": "uuid-of-bot",
@@ -134,151 +84,153 @@ Use this when the user clicks a "Verify" or "Refresh Status" button on a specifi
 }
 ```
 
-**Responses:**
-*   **201 Created (Success):** Returns updated channel object. Status is confirmed Valid.
-*   **400 Bad Request:** "Bot is no longer an Admin". The backend automatically sets `isActive: false`. Update the UI to show the channel as disconnected (Red).
+### 🆕 Create Invite Link (Ad Tracking)
+Create unique links to track where subscribers come from.
+`POST /channels/invite-link`
+```json
+{
+  "botId": "uuid-of-bot",
+  "channelId": "-100123456789",
+  "name": "Instagram Ad Campaign #1"
+}
+```
+**Response:** returns the invite link object (url, name, etc).
+
+### 🆕 Update Channel Profile
+Change the title or description remotely.
+`PATCH /channels/profile`
+```json
+{
+  "botId": "uuid-of-bot",
+  "channelId": "-100123456789",
+  "title": "Impulse News 🚀",
+  "description": "The best news about tech."
+}
+```
 
 ---
 
-## 4. 🚀 Publisher (Scheduling Posts)
-
-This is the main feature. It supports Text, Photos, Albums (Carousels), and Buttons.
+## 4. 🚀 Publisher (Posts, Stories, Stars)
 
 **Endpoint:** `POST /publisher/schedule`
 
-### Common Fields
-All requests must include:
-*   `publishAt`: ISO 8601 Date String (e.g., `2025-10-20T15:30:00.000Z`).
-*   `channelIds`: Array of strings `["-100...", "-100..."]`.
-*   `content`: The payload object (see below).
-
----
-
-### Scenario A: Simple Text Post
-```json
-{
-  "publishAt": "2025-12-25T10:00:00.000Z",
-  "channelIds": ["-1001234567890"],
-  "content": {
-    "text": "Hello world! This is a test."
-  }
-}
-```
-
-### Scenario B: Single Photo + Caption + Buttons
-*   `media`: String URL.
-*   `buttons`: Array of Arrays (Rows of Columns).
-
-```json
-{
-  "publishAt": "2025-12-25T10:00:00.000Z",
-  "channelIds": ["-1001234567890"],
-  "content": {
-    "text": "<b>Check out this product!</b>", // HTML Allowed
-    "media": "https://example.com/image.png",
-    "buttons": [
-      [
-        { "text": "Buy Now ($10)", "url": "https://stripe.com" },
-        { "text": "More Info", "url": "https://google.com" }
-      ],
-      [
-        { "text": "Support", "url": "https://t.me/support" }
-      ]
-    ]
-  }
-}
-```
-
-### Scenario C: Media Album (Carousel)
-*   `media`: Array of String URLs.
-*   **Note:** Telegram does NOT support Buttons with Albums. If you send both, buttons will likely be ignored or cause an error.
-
-```json
-{
-  "publishAt": "2025-12-25T10:00:00.000Z",
-  "channelIds": ["-1001234567890"],
-  "content": {
-    "text": "Here is a gallery of images", // Caption applies to first image
-    "media": [
-      "https://example.com/1.jpg",
-      "https://example.com/2.jpg",
-      "https://example.com/3.jpg"
-    ]
-  }
-}
-```
-
----
-
-## 5. 🛠️ TypeScript Interfaces (Copy-Paste)
-
-Use these in your frontend application.
-
+### Base Payload Structure
 ```typescript
-// --- AUTH ---
-export interface User {
-  id: string;
-  telegramId: string;
-  role: 'user' | 'admin';
-  subscriptionTier?: string;
+{
+  publishAt: string;        // ISO 8601 Date
+  channelIds: string[];     // ["-100..."]
+  type: 'post' | 'story' | 'paid_media'; // Defaults to 'post'
+  content: {
+     text?: string;
+     media?: string | string[];
+     buttons?: InlineButton[][];
+     // New Options
+     options?: {
+        disable_notification?: boolean; // Silent message
+        protect_content?: boolean;      // Disable forwarding/saving (DRM)
+        has_spoiler?: boolean;          // Blur media/text
+     },
+     // New Configs
+     paid_config?: { star_count: number };
+     story_config?: { period: number };
+  }
 }
+```
 
-// --- BOTS ---
-export interface Bot {
-  id: string;
-  username: string;
-  telegramBotId: string;
-  status: 'active' | 'revoked' | 'flood_wait';
-  config: {
-    welcomeMessage?: string;
-  };
+### Scenario A: Standard Post (Text + Image + Buttons)
+```json
+{
+  "type": "post",
+  "publishAt": "2025-12-25T10:00:00.000Z",
+  "channelIds": ["-1001234567890"],
+  "content": {
+    "text": "<b>Hello!</b>",
+    "media": "https://example.com/image.jpg",
+    "options": {
+        "disable_notification": true
+    },
+    "buttons": [
+      [ { "text": "Open Link", "url": "https://google.com" } ]
+    ]
+  }
 }
+```
 
-// --- CHANNELS ---
-export interface Channel {
-  id: string; // BigInt sent as String
-  title: string;
-  photoUrl?: string;
-  membersCount: number;
-  isActive: boolean;
-  ownerBotId: string;
-  bot?: Bot;
+### Scenario B: Telegram Story 📸
+Stories require a photo or video. They sit at the top of the channel circle.
+```json
+{
+  "type": "story",
+  "publishAt": "2025-12-25T12:00:00.000Z",
+  "channelIds": ["-1001234567890"],
+  "content": {
+    "media": "https://example.com/story-video.mp4",
+    "text": "Check out our new drop! 👇", // Caption on story
+    "story_config": {
+        "period": 86400 // How long it lasts in seconds (86400 = 24h)
+    }
+  }
 }
+```
 
-// --- PUBLISHER ---
-export interface InlineButton {
-  text: string;
-  url: string;
+### Scenario C: Paid Media (Stars) ⭐️
+Content hidden behind a paywall. User pays X Stars to view.
+```json
+{
+  "type": "paid_media",
+  "publishAt": "2025-12-25T14:00:00.000Z",
+  "channelIds": ["-1001234567890"],
+  "content": {
+    "text": "Exclusive backstage footage! Unlock to watch.",
+    "media": ["https://example.com/exclusive.mp4"],
+    "paid_config": {
+        "star_count": 50 // Cost in Telegram Stars
+    }
+  }
 }
+```
 
-export interface PostContent {
-  text?: string;
-  media?: string | string[]; // URL or Array of URLs
-  buttons?: InlineButton[][]; // Rows -> Columns
-}
-
-export interface SchedulePostPayload {
-  publishAt: string; // ISO Date
-  channelIds: string[];
-  content: PostContent;
-}
-
-export interface ScheduleResponse {
-  success: boolean;
-  postId: string;
-  scheduledCount: number;
-  publishAt: string;
+### Scenario D: Protected Content (DRM)
+Prevents users from forwarding the message or saving the image.
+```json
+{
+  "type": "post",
+  "publishAt": "2025-12-25T15:00:00.000Z",
+  "channelIds": ["-1001234567890"],
+  "content": {
+    "text": "Secret leak!",
+    "media": "https://example.com/secret.jpg",
+    "options": {
+        "protect_content": true
+    }
+  }
 }
 ```
 
 ---
 
-## 6. ⚠️ Error Handling
+## 5. 🛠 Full Capabilities: What can the Bot do?
+Use this section to build your UI toggles/switches.
 
-| Status Code | Meaning | Action |
+### A. Content Publishing
+| Feature | Description | API Field |
 | :--- | :--- | :--- |
-| **200 / 201** | Success | Show success notification. |
-| **400 Bad Request** | Validation Failed | Show `error.response.data.message` (e.g., "Invalid Token" or "Date in past"). |
-| **401 Unauthorized** | Token Expired/Invalid | **Redirect to Login**. Clear localStorage. |
-| **403 Forbidden** | Access Denied | User trying to access bot/channel they don't own. |
-| **500 Server Error** | Backend Crash | Show "System Error, try again later". (Usually Redis or DB is down). |
+| **Silent Post** | Sends message without sound notification. | `options.disable_notification` |
+| **Protect Content** | Disables forwarding and saving (DRM). | `options.protect_content` |
+| **Spoiler** | Blurs image/video until clicked. | `options.has_spoiler` |
+| **Stories** | Post temporary stories (Images/Videos). | `type: 'story'` |
+| **Paid Media** | Paywall content (Images/Videos) for Stars. | `type: 'paid_media'` |
+| **Albums** | Up to 10 photos/videos in one message. | `media: string[]` |
+
+### B. Channel Administration
+| Feature | Description | API Endpoint |
+| :--- | :--- | :--- |
+| **Sync Info** | Auto-update Title, Description, Member Count, Photo. | `POST /channels/verify` |
+| **Edit Profile** | Change Title & Description remotely. | `PATCH /channels/profile` |
+| **Invite Links** | Generate unique links to track ad sources. | `POST /channels/invite-link` |
+
+### C. Automation
+| Feature | Description |
+| :--- | :--- |
+| **Scheduling** | Server-side queue (Redis). Supports timezone handling. |
+| **Auto-Discovery** | When a user adds the bot as Admin, the channel appears in Impulse automatically via Webhook events. |
