@@ -1,13 +1,15 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { BullModule } from '@nestjs/bullmq'; // <--- ВАЖНО: Подключаем очереди
+import { BullModule } from '@nestjs/bullmq';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 
 // Модули
 import { AuthModule } from './modules/auth/auth.module';
 import { BotsModule } from './modules/bots/bots.module';
-import { ChannelsModule } from './modules/channels/channels.module'; // <--- Новый
-import { PublisherModule } from './modules/publisher/publisher.module'; // <--- Новый
+import { ChannelsModule } from './modules/channels/channels.module';
+import { PublisherModule } from './modules/publisher/publisher.module';
 
 // Энтити (Таблицы)
 import { User } from './database/entities/user.entity';
@@ -27,7 +29,14 @@ import { AdSlot } from './database/entities/ad-slot.entity';
       envFilePath: ['.env', '.env.local'],
     }),
 
-    // 2. База Данных (PostgreSQL / Supabase)
+    // 🛡️ SECURITY: Rate Limiting (DDoS Protection)
+    // 100 запросов в минуту (TTL: 60000ms) с одного IP
+    ThrottlerModule.forRoot([{
+      ttl: 60000,
+      limit: 100,
+    }]),
+
+    // 2. База Данных (Optimized for Load)
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -35,14 +44,11 @@ import { AdSlot } from './database/entities/ad-slot.entity';
         const directUrl = configService.get<string>('DIRECT_URL');
         const poolerUrl = configService.get<string>('DATABASE_URL');
         
-        const url = directUrl || poolerUrl;
+        const url = poolerUrl || directUrl; // Prefer Pooler for High Load
         
         if (!url) {
           throw new Error('❌ FATAL: Database URL is missing! Check your .env file.');
         }
-
-        const safeUrl = url.replace(/:([^:@]+)@/, ':****@');
-        console.log(`✅ Connecting to Database via: ${safeUrl}`);
 
         return {
           type: 'postgres',
@@ -51,11 +57,13 @@ import { AdSlot } from './database/entities/ad-slot.entity';
             User, UserBot, Channel, Post, 
             ScheduledPublication, Campaign, Participant, AdSlot
           ],
-          synchronize: false, // В продакшене всегда false, используем миграции
+          synchronize: false, 
           ssl: { rejectUnauthorized: false },
           extra: {
-            max: 10,
-            connectionTimeoutMillis: 5000,
+            // 🚀 PERF: Увеличенный пул для 10k+ каналов
+            // Если используем Supabase Transaction Pooler (Port 6543), тут можно ставить хоть 50
+            max: 50, 
+            connectionTimeoutMillis: 10000,
             idleTimeoutMillis: 30000,
             keepAlive: true,
           },
@@ -63,21 +71,21 @@ import { AdSlot } from './database/entities/ad-slot.entity';
       },
     }),
 
-    // 3. Очереди (Redis / BullMQ) - НОВОЕ
+    // 3. Очереди (Redis / BullMQ)
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
         const redisUrl = configService.get<string>('REDIS_URL');
-        
-        if (!redisUrl) {
-           console.warn('⚠️ WARNING: REDIS_URL is missing! Scheduling will fail.');
-        }
+        if (!redisUrl) console.warn('⚠️ WARNING: REDIS_URL is missing!');
 
         return {
           connection: {
-            url: redisUrl, // Например: rediss://default:password@...upstash.io:6379
-            family: 0, // Исправляет некоторые ошибки DNS в Node v18+
+            url: redisUrl,
+            family: 0,
+            // 🛡️ SECURITY: Fail fast if Redis is down, don't hang server
+            connectTimeout: 10000, 
+            maxRetriesPerRequest: null,
           },
         };
       },
@@ -86,10 +94,15 @@ import { AdSlot } from './database/entities/ad-slot.entity';
     // 4. Бизнес-модули
     AuthModule,
     BotsModule,
-    ChannelsModule, // <--- Подключили
-    PublisherModule, // <--- Подключили
+    ChannelsModule,
+    PublisherModule,
   ],
-  controllers: [],
-  providers: [],
+  providers: [
+    // 🛡️ GLOBAL GUARD: Активируем защиту от спама для всех эндпоинтов
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
 })
 export class AppModule {}

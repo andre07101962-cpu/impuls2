@@ -2,10 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { Channel } from '../../database/entities/channel.entity';
-import { BotsService } from '../bots/bots.service';
-import { Telegraf } from 'telegraf';
-import axios from 'axios';
 
 @Injectable()
 export class ChannelSyncService {
@@ -14,16 +13,17 @@ export class ChannelSyncService {
   constructor(
     @InjectRepository(Channel)
     private channelRepository: Repository<Channel>,
-    private botsService: BotsService,
+    @InjectQueue('channel-sync') private syncQueue: Queue, // <--- Producer
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR)
-  async syncSubscribers() {
-    this.logger.log('🔄 Starting Channel Full Sync (Stats + Metadata)...');
+  async dispatchSyncJobs() {
+    this.logger.log('🔄 Cron: Dispatching Sync Jobs...');
 
-    // 1. Fetch Active Channels
+    // 🚀 SCALABILITY: Fetch ONLY IDs. Do not load full entities into memory.
     const channels = await this.channelRepository.find({
       where: { isActive: true },
+      select: ['id', 'ownerBotId'], // Ultra-light query
     });
 
     if (channels.length === 0) {
@@ -31,63 +31,22 @@ export class ChannelSyncService {
         return;
     }
 
-    let updatedCount = 0;
-    let errorCount = 0;
+    this.logger.log(`Creating jobs for ${channels.length} channels...`);
 
-    // 2. Iterate sequentially
-    for (const channel of channels) {
-      try {
-        // Decrypt Token
-        const { token } = await this.botsService.getBotWithDecryptedToken(channel.ownerBotId);
-        const bot = new Telegraf(token);
-
-        // Fetch Full Info (Chat + Members)
-        const [chatInfo, membersCount] = await Promise.all([
-             bot.telegram.getChat(channel.id),
-             bot.telegram.getChatMembersCount(channel.id)
-        ]);
-
-        // Resolve Photo
-        let photoUrl = channel.photoUrl; // Keep old one by default
-        if (chatInfo.photo) {
-             try {
-                const link = await bot.telegram.getFileLink(chatInfo.photo.big_file_id);
-                photoUrl = link.toString();
-             } catch (e) {
-                // Ignore photo fetch errors
-             }
+    // Bulk add to Redis is faster
+    const jobs = channels.map(channel => ({
+        name: 'sync-metadata',
+        data: { channelId: channel.id, botId: channel.ownerBotId },
+        opts: {
+            removeOnComplete: true, // Don't fill Redis with success logs
+            removeOnFail: 500, // Keep last 500 errors for debugging
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2000 }
         }
+    }));
 
-        // Check if anything changed
-        const titleChanged = (chatInfo as any).title !== channel.title;
-        const membersChanged = membersCount !== channel.membersCount;
-        const photoChanged = photoUrl !== channel.photoUrl;
+    await this.syncQueue.addBulk(jobs);
 
-        if (titleChanged || membersChanged || photoChanged) {
-            await this.channelRepository.update(channel.id, { 
-                membersCount,
-                title: (chatInfo as any).title,
-                photoUrl
-            });
-            updatedCount++;
-        }
-
-      } catch (error) {
-        errorCount++;
-        // If bot is kicked (403) or chat not found (400), deactivate channel
-        // Telegraf errors have 'response' or 'code'
-        const errCode = (error as any).response?.error_code || (error as any).code;
-        
-        if (errCode === 403 || errCode === 400 || (error.message && error.message.includes('chat not found'))) {
-            this.logger.warn(`Bot kicked/removed from channel ${channel.id}. Deactivating...`);
-            await this.channelRepository.update(channel.id, { isActive: false });
-        }
-      }
-
-      // 3. Polite Delay (200ms)
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-
-    this.logger.log(`✅ Sync Complete. Updated: ${updatedCount}, Errors/Deactivations: ${errorCount}`);
+    this.logger.log(`✅ Dispatched ${channels.length} jobs to 'channel-sync' queue.`);
   }
 }

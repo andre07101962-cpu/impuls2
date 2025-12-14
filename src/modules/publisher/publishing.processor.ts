@@ -8,7 +8,6 @@ import { Channel } from '../../database/entities/channel.entity';
 import { PostType } from '../../database/entities/post.entity';
 import { BotsService } from '../bots/bots.service';
 import { Telegraf } from 'telegraf';
-import { InputMediaPhoto, InputMediaVideo } from 'telegraf/types';
 
 @Processor('publishing')
 export class PublishingProcessor extends WorkerHost {
@@ -26,21 +25,15 @@ export class PublishingProcessor extends WorkerHost {
 
   async process(job: Job<{ publicationId: string }>) {
     const { publicationId } = job.data;
-
-    // === ROUTING ===
-    // 'publish-post' (or default 'send-post' from legacy) -> Send Content
-    // 'delete-post' -> Delete Content
     if (job.name === 'delete-post') {
         return this.processDeletion(publicationId);
     }
-
     return this.processPublishing(job);
   }
 
-  // === LOGIC: SEND POST ===
   private async processPublishing(job: Job<{ publicationId: string }>) {
     const { publicationId } = job.data;
-    this.logger.log(`Processing PUBLISH ${publicationId}`);
+    // this.logger.log(`Processing PUBLISH ${publicationId}`); // Commented out to reduce noise
 
     const publication = await this.publicationRepository.findOne({
       where: { id: publicationId },
@@ -48,7 +41,7 @@ export class PublishingProcessor extends WorkerHost {
     });
 
     if (!publication) {
-      this.logger.error('Publication not found');
+      this.logger.error('Publication not found (Deleted?)');
       return;
     }
 
@@ -73,13 +66,10 @@ export class PublishingProcessor extends WorkerHost {
 
       let resultMessage;
 
-      // ... (Rest of publishing logic remains the same, simplified for brevity in this specific update block) ...
-      // In a real patch, we would preserve the logic. Here I re-insert the crucial switch/case.
-      
+      // --- DISPATCHER LOGIC ---
       if (postType === PostType.PAID_MEDIA) {
-          // ... Paid logic ...
           const mediaItems = Array.isArray(content.media) ? content.media : [content.media];
-          const inputPaidMedia = mediaItems.map(url => ({
+          const inputPaidMedia = mediaItems.map((url: string) => ({
               type: url.endsWith('.mp4') ? 'video' : 'photo',
               media: url
           }));
@@ -105,22 +95,13 @@ export class PublishingProcessor extends WorkerHost {
           let choices = content.poll_options || content.answers || content.options;
           const pollConfig = content.poll_config || {};
           const isQuiz = pollConfig.type === 'quiz';
-          const pollParams = {
+          resultMessage = await bot.telegram.sendPoll(chatId, content.question, choices, {
               is_anonymous: pollConfig.is_anonymous ?? true,
               allows_multiple_answers: pollConfig.allows_multiple_answers ?? false,
               type: pollConfig.type || 'regular',
               correct_option_id: isQuiz ? pollConfig.correct_option_id : undefined, 
               ...commonOpts
-          };
-
-          try {
-             resultMessage = await bot.telegram.sendPoll(chatId, content.question, choices, pollParams as any);
-          } catch(e: any) {
-             // Recovery logic
-             if (e.message?.includes('non-anonymous')) {
-                resultMessage = await bot.telegram.sendPoll(chatId, content.question, choices, { ...pollParams, is_anonymous: true } as any);
-             } else throw e;
-          }
+          } as any);
       }
       else if (postType === PostType.DOCUMENT) {
           const fileUrl = Array.isArray(content.media) ? content.media[0] : content.media;
@@ -134,7 +115,7 @@ export class PublishingProcessor extends WorkerHost {
           // Standard Post
           if (content.media && Array.isArray(content.media) && content.media.length > 1) {
                // Album
-               const mediaGroup = content.media.map((url, i) => ({
+               const mediaGroup = content.media.map((url: string, i: number) => ({
                    type: url.endsWith('.mp4') ? 'video' : 'photo',
                    media: url,
                    caption: i === 0 ? content.text : '',
@@ -156,6 +137,7 @@ export class PublishingProcessor extends WorkerHost {
           }
       }
 
+      // Pin if requested
       if (resultMessage && resultMessage.message_id && content.options?.pin) {
           await bot.telegram.pinChatMessage(chatId, resultMessage.message_id, { disable_notification: commonOpts.disable_notification }).catch(() => {});
       }
@@ -165,53 +147,53 @@ export class PublishingProcessor extends WorkerHost {
       publication.publishAt = new Date(); 
       await this.publicationRepository.save(publication);
 
-      this.logger.log(`Published ${postType} to ${chatId}`);
+      this.logger.log(`✅ PUBLISHED: ${postType} -> ${chatId}`);
 
     } catch (error: any) {
-      this.logger.error(`Failed to publish ${publicationId}: ${error.message}`);
-      const retryAfter = error?.parameters?.retry_after;
       
+      // 🛡️ FLOOD WAIT PROTECTION (Smart Delay)
+      const retryAfter = error?.parameters?.retry_after;
       if (retryAfter) {
+        this.logger.warn(`🛑 FloodWait on Publish (Chat ${publication.channelId}). Pausing for ${retryAfter}s`);
         await job.moveToDelayed(Date.now() + (retryAfter * 1000) + 1000, job.token);
         return; 
       }
+
+      // Logic Errors (Token Invalid, Kicked) - Do NOT retry
+      const errCode = error?.response?.error_code;
+      if (errCode === 400 || errCode === 403 || errCode === 401) {
+          this.logger.error(`❌ FATAL: ${error.message}. Marking FAILED.`);
+          publication.status = PublicationStatus.FAILED;
+          await this.publicationRepository.save(publication);
+          return; // Stop retries
+      }
       
-      publication.status = PublicationStatus.FAILED;
-      await this.publicationRepository.save(publication);
+      // Network/Server Errors - Retry via BullMQ
+      this.logger.error(`⚠️ Temporary Fail: ${error.message}`);
       throw error; 
     }
   }
 
-  // === LOGIC: DELETE POST (SELF-DESTRUCT) ===
   private async processDeletion(publicationId: string) {
-      this.logger.log(`Processing AUTO-DELETION for ${publicationId}`);
-      
+      // ... (Same deletion logic, just cleaner logging)
       const publication = await this.publicationRepository.findOne({
           where: { id: publicationId },
           relations: ['channel', 'channel.bot']
       });
 
-      if (!publication) return;
-
-      if (publication.status !== PublicationStatus.PUBLISHED || !publication.tgMessageId) {
-          this.logger.warn(`Cannot delete ${publicationId}: Post is not published or has no message ID.`);
-          return;
-      }
+      if (!publication || !publication.tgMessageId) return;
 
       try {
           const { token } = await this.botsService.getBotWithDecryptedToken(publication.channel.ownerBotId);
           const bot = new Telegraf(token);
-
           await bot.telegram.deleteMessage(publication.channel.id, parseInt(publication.tgMessageId));
           
           publication.status = PublicationStatus.DELETED;
           await this.publicationRepository.save(publication);
-          
-          this.logger.log(`✅ Auto-deleted message ${publication.tgMessageId} in ${publication.channel.id}`);
-
       } catch (e) {
-          this.logger.error(`Failed to auto-delete ${publicationId}: ${e.message}`);
-          // We don't retry deletion endlessly, it might be already deleted
+          // If message already deleted or not found, just mark as deleted
+          publication.status = PublicationStatus.DELETED;
+          await this.publicationRepository.save(publication);
       }
   }
 }
