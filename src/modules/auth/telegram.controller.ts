@@ -1,4 +1,4 @@
-import { Body, Controller, Post, HttpCode } from '@nestjs/common';
+import { Body, Controller, Post, HttpCode, Headers, UnauthorizedException } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { TelegramService } from './telegram.service';
@@ -14,7 +14,20 @@ export class TelegramController {
   @Post('webhook')
   @HttpCode(200)
   @ApiOperation({ summary: 'Handle Telegram webhook updates' })
-  async handleWebhook(@Body() update: any) {
+  async handleWebhook(
+    @Body() update: any,
+    @Headers('x-telegram-bot-api-secret-token') secretToken: string
+  ) {
+    // 🛡️ SECURITY: Verify request comes from Telegram
+    // The secret should be defined in your .env and set when calling setWebhook
+    const configuredSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+    
+    // Only check if secret is configured (Highly recommended for production)
+    if (configuredSecret && secretToken !== configuredSecret) {
+        console.warn('🛑 Blocked unauthorized webhook attempt');
+        throw new UnauthorizedException('Invalid Secret Token');
+    }
+
     // Basic check for message existence
     if (!update.message || !update.message.text) {
       return { status: 'ignored' };

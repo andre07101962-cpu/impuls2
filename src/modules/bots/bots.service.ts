@@ -1,5 +1,4 @@
-
-import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Logger, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UserBot, BotStatus } from '../../database/entities/user-bot.entity';
@@ -73,10 +72,26 @@ export class BotsService {
     return savedBot;
   }
 
-  async getBotWithDecryptedToken(botId: string): Promise<{ bot: UserBot; token: string }> {
-    const bot = await this.botRepository.findOne({ where: { id: botId } });
-    if (!bot) throw new NotFoundException('Bot not found');
+  /**
+   * 🛡️ SECURITY: Retrieves bot token. 
+   * If userId is provided, it enforces ownership check (Anti-IDOR).
+   */
+  async getBotWithDecryptedToken(botId: string, userId?: string): Promise<{ bot: UserBot; token: string }> {
+    const whereCondition: any = { id: botId };
+    if (userId) {
+        whereCondition.userId = userId;
+    }
+
+    const bot = await this.botRepository.findOne({ where: whereCondition });
+    
+    if (!bot) {
+        // If userId was passed, specific error to allow determining if it's 404 or 403
+        if (userId) throw new ForbiddenException('Bot not found or access denied');
+        throw new NotFoundException('Bot not found');
+    }
+
     if (bot.status !== BotStatus.ACTIVE) throw new BadRequestException('Bot is not active');
+    
     const token = EncryptionUtil.decrypt(bot.tokenEncrypted);
     return { bot, token };
   }
