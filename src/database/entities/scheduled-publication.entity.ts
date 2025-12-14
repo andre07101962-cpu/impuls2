@@ -6,6 +6,7 @@ export enum PublicationStatus {
   SCHEDULED = 'scheduled',
   PUBLISHED = 'published',
   FAILED = 'failed',
+  DELETED = 'deleted', // New status for auto-deleted posts
 }
 
 @Entity('scheduled_publications')
@@ -26,9 +27,13 @@ export class ScheduledPublication {
   @Column({ type: 'enum', enum: PublicationStatus, default: PublicationStatus.SCHEDULED })
   status: PublicationStatus;
 
-  // New field to track the BullMQ Job ID
+  // Track the Publishing Job (BullMQ)
   @Column({ name: 'job_id', nullable: true })
   jobId: string;
+
+  // Track the Deletion Job (BullMQ)
+  @Column({ name: 'delete_job_id', nullable: true })
+  deleteJobId: string;
 
   @Column({ name: 'channel_id', type: 'bigint' })
   channelId: string;

@@ -1,7 +1,7 @@
 import { Controller, Post, Patch, Get, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { PublisherService } from './publisher.service';
-import { IsArray, IsString, IsNotEmpty, IsObject, IsOptional, IsEnum } from 'class-validator';
+import { IsArray, IsString, IsNotEmpty, IsObject, IsOptional, IsEnum, IsBoolean } from 'class-validator';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { CurrentUser } from '../../common/decorators/user.decorator';
 import { User } from '../../database/entities/user.entity';
@@ -41,6 +41,11 @@ class SchedulePostDto {
   @IsString()
   @IsNotEmpty()
   publishAt: string;
+
+  @ApiProperty({ example: '2025-12-26T10:00:00.000Z', required: false, description: 'Auto-delete time (Self-destruct)' })
+  @IsString()
+  @IsOptional()
+  deleteAt?: string;
 }
 
 class EditPostDto {
@@ -58,6 +63,16 @@ class EditPostDto {
   @IsString()
   @IsOptional()
   publishAt?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  deleteAt?: string;
+
+  @ApiProperty({ required: false, description: 'If true, attempts to edit the message in Telegram immediately (if already published)' })
+  @IsBoolean()
+  @IsOptional()
+  isLiveEdit?: boolean;
 }
 
 @ApiTags('Publisher')
@@ -78,11 +93,11 @@ export class PublisherController {
   schedule(@Body() dto: SchedulePostDto) {
     // Inject the 'type' into the content payload for persistence if not already there
     const contentWithType = { ...dto.content, type: dto.type || PostType.POST };
-    return this.publisherService.schedulePost(contentWithType, dto.channelIds, dto.publishAt);
+    return this.publisherService.schedulePost(contentWithType, dto.channelIds, dto.publishAt, dto.deleteAt);
   }
 
   @Patch('schedule/:id')
-  @ApiOperation({ summary: 'Edit a scheduled post (Time, Content, or Channels)' })
+  @ApiOperation({ summary: 'Edit a scheduled post (Time, Content, or Channels). Supports Live Edit.' })
   edit(@Param('id') id: string, @Body() dto: EditPostDto) {
     return this.publisherService.editScheduledPost(id, dto);
   }
