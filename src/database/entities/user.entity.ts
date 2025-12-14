@@ -1,4 +1,4 @@
-import { Entity, Column, PrimaryGeneratedColumn, OneToMany, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, OneToMany, CreateDateColumn, UpdateDateColumn, Index } from 'typeorm';
 import { UserBot } from './user-bot.entity';
 
 export enum UserRole {
@@ -20,8 +20,10 @@ export class User {
   @Column({ name: 'subscription_tier', nullable: true })
   subscriptionTier: string;
 
+  // 🚀 PERF: Index required for fast AuthGuard lookups
   @Column({ name: 'access_token_hash', nullable: true, select: false }) 
-  accessTokenHash: string; // Stored securely (hashed)
+  @Index('idx_users_token_hash') 
+  accessTokenHash: string; 
 
   @OneToMany(() => UserBot, (bot) => bot.user)
   bots: UserBot[];
