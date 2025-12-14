@@ -2,7 +2,7 @@
 import { Body, Controller, Post, Get, HttpCode, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
-import { IsString, IsNotEmpty } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumberString } from 'class-validator';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { CurrentUser } from '../../common/decorators/user.decorator';
 import { User } from '../../database/entities/user.entity';
@@ -11,6 +11,7 @@ class LoginDto {
   @ApiProperty({ example: '123456789' })
   @IsString()
   @IsNotEmpty()
+  @IsNumberString({}, { message: 'telegramId must be a numeric string' }) // 🛡 Security Fix
   telegramId: string;
 
   @ApiProperty({ example: 'abc123xyz...' })

@@ -1,7 +1,33 @@
-# 🛡️ IMPULSE: MASTER FRONTEND PROTOCOL (v3.2)
-**Doc Version:** 3.2.1 (Signed Off)
+
+# 🛡️ IMPULSE: MASTER FRONTEND PROTOCOL (v3.3)
+**Doc Version:** 3.3.0 (Synced with Backend Hotfixes)
 **Target:** Frontend Developer
 **Objective:** Complete verification of the Post Creation, Editing, Scheduling, and Deletion flow.
+
+---
+
+## 🚨 SECTION 0: CRITICAL INTEGRATION QUIZ (MUST PASS)
+*Backend Architect requests confirmation on these specific logic points to avoid 400/500 errors.*
+
+1.  **[ ] The Channel Trap:** 
+    *   **Question:** When opening the **Edit Modal** (for both Scheduled and Published posts), is the Channel Selector component **DISABLED/READ-ONLY**?
+    *   **Reason:** The Backend `PATCH /schedule/:id` currently ignores changes to `channelIds`. If a user unchecks a channel in UI, it won't be removed on the server, leading to data desync.
+    
+2.  **[ ] The Auth Type Safety:**
+    *   **Question:** When calling `POST /auth/login`, are you converting `telegramId` to a **String**? (e.g. `String(window.Telegram.WebApp.initDataUnsafe.user.id)`)?
+    *   **Reason:** The Backend now strictly validates `@IsNumberString()`. Sending a raw number or "undefined" will cause a 400 error.
+
+3.  **[ ] Live Edit Timer:**
+    *   **Question:** If `status === 'published'`, allows the user to change the **Auto-Delete Timer**?
+    *   **Reason:** Backend now supports updating `deleteAt` even for published posts. Ensure this input is NOT disabled in Live Edit mode (unlike Media/Text).
+
+4.  **[ ] The Poll Text Cleanup:**
+    *   **Question:** When submitting a POLL, do you explicitly set `content.text` to `undefined` or `null`?
+    *   **Reason:** Telegram API will reject a Poll that tries to send a caption/text attached to it.
+
+5.  **[ ] Story Button Block:**
+    *   **Question:** If `type === 'story'`, are the **"Add Button"** and **"Pin"** UI elements hidden?
+    *   **Reason:** Stories do not support inline buttons or pinning. Sending them might fail validation or be silently ignored.
 
 ---
 
@@ -60,6 +86,7 @@
 ### 2.1 Channel Selection
 - [x] **Validation:** Button "Schedule" is disabled if `channelIds` array is empty.
 - [x] **Inactive Channels:** If a channel has `isActive: false` (bot kicked), it must be visually disabled or show a warning icon in the selector.
+- [x] **Edit Mode:** Selector MUST BE DISABLED when editing an existing post.
 
 ### 2.2 Post Type Logic (Conditional Rendering)
 
@@ -157,7 +184,9 @@
 | **Delete Action** | [x] | Connected to DELETE /publisher/:id. |
 | **Date ISO Conversion** | [x] | Using standard JS Date ISO conversion. |
 | **Empty Validation** | [x] | Guard clauses added. |
+| **Channel Lock (Edit)** | [ ] | **PENDING VERIFICATION** |
+| **Live Timer Edit** | [ ] | **PENDING VERIFICATION** |
 
 ---
 **Signed off by:** Senior Backend Architect
-**Date:** 2024-05-20
+**Date:** 2024-12-14

@@ -1,3 +1,4 @@
+
 import { Controller, Post, Patch, Get, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { PublisherService } from './publisher.service';
@@ -54,6 +55,11 @@ class EditPostDto {
   @IsOptional()
   content?: any;
 
+  @ApiProperty({ enum: PostType, required: false, description: 'Allow changing type during edit' })
+  @IsOptional()
+  @IsEnum(PostType)
+  type?: PostType;
+
   @ApiProperty({ required: false })
   @IsArray()
   @IsOptional()
@@ -99,6 +105,13 @@ export class PublisherController {
   @Patch('schedule/:id')
   @ApiOperation({ summary: 'Edit a scheduled post (Time, Content, or Channels). Supports Live Edit.' })
   edit(@Param('id') id: string, @Body() dto: EditPostDto) {
+    // Adapter: If type is provided at root, ensure it's merged into content for the service logic
+    if (dto.type && dto.content) {
+        dto.content.type = dto.type;
+    } else if (dto.type && !dto.content) {
+        // Edge case: User only wants to change type? We create a partial content object.
+        return this.publisherService.editScheduledPost(id, { ...dto, content: { type: dto.type } });
+    }
     return this.publisherService.editScheduledPost(id, dto);
   }
 
