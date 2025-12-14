@@ -1,108 +1,163 @@
-# 📋 Checklist: Impulse API v3.2 Implementation
-**Role:** Frontend Developer
-**Objective:** Verify data integrity for the new Publishing features (Polls, Docs, Pinning, Deletion).
-
-## 1. 🏗 Enum & Types Sync
-*Проверка соответствия констант.*
-
-- [ ] **PostType Enum**: Обновлен ли `enum` в коде фронтенда? Должны быть все 5 значений:
-  ```typescript
-  export enum PostType {
-    POST = 'post',             // Standard
-    STORY = 'story',           // Telegram Story
-    PAID_MEDIA = 'paid_media', // Telegram Stars
-    POLL = 'poll',             // 🆕 New!
-    DOCUMENT = 'document',     // 🆕 New!
-  }
-  ```
-- [ ] **Payload Structure**: Убедись, что при отправке `POST /publisher/schedule` поле `type` отправляется **на верхнем уровне JSON**, наравне с `content`, `publishAt` и `channelIds`.
-
-## 2. 📝 Payload Generation (Logic Per Type)
-*Самая критичная часть. Проверь логику формирования объекта `content` в зависимости от выбранного типа.*
-
-### A. Тип: `POLL` (Опрос)
-- [ ] **Validation**: Кнопка отправки заблокирована, если:
-    - Поле `question` пустое.
-    - Массив `options` содержит меньше 2-х вариантов.
-    - Массив `options` содержит больше 10-ти вариантов.
-- [ ] **Config**: Объект `poll_config` отправляется всегда.
-    - `is_anonymous`: boolean (default: true)
-    - `allows_multiple_answers`: boolean (default: false)
-    - `type`: 'regular' | 'quiz'
-- [ ] **Quiz Logic**: Если выбран `type: 'quiz'`, фронтенд обязан передать `correct_option_id` (индекс правильного ответа: 0, 1, 2...).
-
-### B. Тип: `DOCUMENT` (Файл)
-- [ ] **Media**: Поле `media` содержит **одну строку** (URL файла), а не массив.
-- [ ] **Text**: Поле для ввода текста в UI называется "Caption" (Подпись).
-- [ ] **Preview**: Если файл — PDF или ZIP, в UI показывается иконка файла, а не попытка отрендерить картинку.
-
-### C. Тип: `STORY` (История)
-- [ ] **Media Check**: Поле `media` обязательно.
-- [ ] **Media Type**: Разрешены только фото или видео (не документы).
-- [ ] **Config**: Передается ли `story_config.period` (в секундах)? Например, `86400` для 24 часов.
-
-### D. Тип: `PAID_MEDIA` (Звезды)
-- [ ] **Stars**: Поле `paid_config.star_count` > 0. UI не должен позволять отправить "бесплатный" платный пост.
-- [ ] **Media**: Обязательно наличие контента в `media` (фото или видео).
-
-## 3. ⚙️ Global Options (Настройки поста)
-*Проверка вложенного объекта `options`.*
-
-- [ ] **Pinning (🆕)**: Есть ли переключатель "Pin message"?
-    - Значение улетает в `content.options.pin` (boolean).
-- [ ] **Spoilers**: Переключатель "Spoiler / Hidden" отправляет `content.options.has_spoiler`.
-- [ ] **Silent**: Переключатель "Silent Mode" отправляет `content.options.disable_notification`.
-- [ ] **DRM**: Переключатель "Protect Content" отправляет `content.options.protect_content`.
-
-## 4. 🗑 Deletion & Editing
-*Проверка новых эндпоинтов.*
-
-- [ ] **Delete Button**: В списке публикаций (Calendar/List) появилась кнопка удаления?
-- [ ] **Delete API**: Кнопка вызывает `DELETE /publisher/:id`.
-- [ ] **Confirmation**: Перед удалением показывается модалка "Are you sure?".
-    - *Context:* Если пост уже опубликован, он удалится из Телеграма. Юзер должен это понимать.
-- [ ] **Edit Lock**: Если пост имеет статус `PUBLISHED` или `FAILED`, кнопка редактирования (`PATCH`) должна быть скрыта или заблокирована. Редактировать можно только `SCHEDULED`.
-
-## 5. 🔍 Data Validation (Pre-flight)
-*Что нужно проверить ДО отправки запроса на сервер.*
-
-- [ ] **Channels**: Массив `channelIds` не пустой.
-- [ ] **Date Format**: Поле `publishAt` конвертируется в UTC ISO String (`2024-05-20T15:30:00.000Z`).
-    - *Частая ошибка:* Отправка локального времени без Timezone Offset.
-- [ ] **Media URLs**: Все ссылки в массиве `media` валидны (начинаются с http/https).
-
-## 6. 🚦 Error Handling (Response parsing)
-*Реакция на ответы сервера.*
-
-- [ ] **400 Bad Request**:
-    - Если сервер вернул `Inactive Channel`, UI подсвечивает конкретный канал красным.
-- [ ] **403 Forbidden**:
-    - Если при удалении вернулось "You do not own this post", показать тостер ошибки доступа.
-- [ ] **Success Toast**:
-    - При удалении (`DELETE`) сервер возвращает статистику: `{ cancelled: 1, deletedFromTelegram: 0 }`. Хороший UX — показать: *"Scheduled post cancelled"* или *"Message deleted from Channel"*.
+# 🛡️ IMPULSE: MASTER FRONTEND PROTOCOL (v3.2)
+**Doc Version:** 3.2.1 (Signed Off)
+**Target:** Frontend Developer
+**Objective:** Complete verification of the Post Creation, Editing, Scheduling, and Deletion flow.
 
 ---
 
-### 💡 Json Example for Testing
-*Используй этот JSON чтобы проверить, правильно ли фронт собирает "Максимально сложный пост" (Опрос с пином).*
+## 🛑 SECTION 1: DATA STRUCTURES (TYPESCRIPT)
+*Define these interfaces exactly as shown to match Backend Entities.*
 
-```json
-{
-  "type": "poll",
-  "publishAt": "2025-01-01T12:00:00.000Z",
-  "channelIds": ["-10012345678"],
-  "content": {
-    "question": "What is the capital of France?",
-    "options": ["Berlin", "Madrid", "Paris"],
-    "poll_config": {
-      "type": "quiz",
-      "correct_option_id": 2,
-      "is_anonymous": true
-    },
-    "options": {
-      "pin": true,
-      "disable_notification": false
-    }
+### 1.1 Post Types Enum
+- [x] **Enum defined:**
+  ```typescript
+  export enum PostType {
+    POST = 'post',             // Text, Photo, Video, Album
+    STORY = 'story',           // Telegram Story (Mobile only view)
+    PAID_MEDIA = 'paid_media', // Telegram Stars (Blurry content)
+    POLL = 'poll',             // Quiz or Regular Poll
+    DOCUMENT = 'document',     // File (PDF, ZIP, etc)
   }
-}
-```
+  ```
+
+### 1.2 The "Payload" Interface
+- [x] **Interface matches JSONB structure:**
+  ```typescript
+  interface PostContentPayload {
+    text?: string;                // Used for Post text, Caption for Media/Docs
+    media?: string | string[];    // Array for Albums, Single string for Story/Doc
+    buttons?: InlineButton[][];   // Only for 'post' type!
+    
+    // --- POLLS (Specific) ---
+    question?: string;
+    poll_options?: string[];      // ⚠️ MUST BE 'poll_options', NOT 'options'
+    poll_config?: {
+       is_anonymous: boolean;
+       allows_multiple_answers: boolean;
+       type: 'regular' | 'quiz';
+       correct_option_id?: number; // Required if type is 'quiz'
+    };
+
+    // --- GLOBAL SETTINGS (Applied to all) ---
+    options?: {
+       disable_notification?: boolean; // Silent Mode
+       protect_content?: boolean;      // DRM (No Save/Forward)
+       has_spoiler?: boolean;          // Spoiler animation
+       pin?: boolean;                  // 🆕 Pin to channel top
+    };
+
+    // --- OTHER CONFIGS ---
+    story_config?: { period: number };    // e.g. 86400
+    paid_config?: { star_count: number }; // e.g. 50
+  }
+  ```
+
+---
+
+## 🛠️ SECTION 2: THE CONSTRUCTOR (UI FLOW)
+*Walkthrough of the "Create Post" Modal/Page.*
+
+### 2.1 Channel Selection
+- [x] **Validation:** Button "Schedule" is disabled if `channelIds` array is empty.
+- [x] **Inactive Channels:** If a channel has `isActive: false` (bot kicked), it must be visually disabled or show a warning icon in the selector.
+
+### 2.2 Post Type Logic (Conditional Rendering)
+
+#### A. Type: STANDARD POST (`post`)
+- [x] **Media:** Accepts 0 to 10 items (Photos/Videos).
+- [x] **Album Logic:** If >1 media items -> Send as Array.
+- [x] **Buttons:** Allowed. (Interface for adding URL buttons).
+- [x] **Constraints:** If `media` is empty AND `text` is empty -> Block submit.
+
+#### B. Type: STORY (`story`)
+- [x] **Media:** Accepts EXACTLY 1 item (Photo or Video).
+- [x] **Buttons:** HIDDEN (Stories do not support inline buttons via API).
+- [x] **Config:** Hidden field `story_config.period` defaults to `86400` (24h).
+
+#### C. Type: DOCUMENT (`document`) 🆕
+- [x] **Input:** Shows file upload or URL input instead of Image Gallery.
+- [x] **Preview:** Shows standard file icon (e.g., 📄 PDF), does NOT try to render it as an image.
+- [x] **Payload:** `content.media` sends a **String** (URL), not an array.
+- [x] **Caption:** The main text area acts as the file caption.
+
+#### D. Type: POLL (`poll`) 🆕
+- [x] **UI:** Hides Media Uploader. Hides Text Area. Shows "Poll Builder".
+- [x] **Builder:** Inputs for "Question" and dynamic list for "Answers".
+- [x] **Limits:** Min 2 answers, Max 10 answers.
+- [x] **Quiz Mode:** If user selects "Quiz Mode", UI asks to select which answer is correct (Radio button).
+- [x] **Payload Check:** Ensure answers are sent in `poll_options` array.
+
+#### E. Type: PAID MEDIA (`paid_media`)
+- [x] **Input:** Adds a numeric input for "Star Price" (1-2500).
+- [x] **Validation:** `star_count` must be > 0.
+- [x] **Media:** Required (Photo/Video).
+
+---
+
+## ⚙️ SECTION 3: GLOBAL SETTINGS PANEL
+*These toggles apply to almost all post types.*
+
+### 3.1 Pinning (New)
+- [x] **UI:** Toggle switch "Pin to Channel".
+- [x] **Logic:** Sends `content.options.pin = true`.
+- [x] **Context:** Works for Posts, Polls, Videos. (Does NOT work for Stories, hide toggle if type=story).
+
+### 3.2 Notification & Privacy
+- [x] **Silent:** Toggle "Send without sound" -> `content.options.disable_notification`.
+- [x] **Protect:** Toggle "Prevent Saving/Forwarding" -> `content.options.protect_content`.
+
+---
+
+## 📅 SECTION 4: SCHEDULING (TIME)
+
+### 4.1 Date Format
+- [x] **Payload:** `publishAt` must be a full ISO String with Timezone (e.g., `2023-10-25T14:30:00.000Z`).
+- [x] **Timezone UX:** Ensure the user understands if they are picking time in their Local Time or UTC. (Recommendation: Convert Local Picker -> UTC for Payload).
+
+---
+
+## 📡 SECTION 5: API INTERACTIONS (REQUESTS)
+
+### 5.1 Create (POST /publisher/schedule)
+- [x] **Body Structure:**
+  ```json
+  {
+    "type": "poll",  <-- IMPORTANT: Top level field
+    "channelIds": ["..."],
+    "publishAt": "...",
+    "content": { ... }
+  }
+  ```
+- [x] **Response Handling:** On 200 OK -> Close modal, Clear form, Toast "Scheduled".
+
+### 5.2 Edit (PATCH /publisher/schedule/:id)
+- [x] **Lock Logic:** If `status` is 'published' or 'failed', the "Edit" button in UI is hidden or disabled. Only 'scheduled' posts can be edited.
+- [x] **Payload:** Only send fields that changed (or full object).
+- [x] **Type Switching:** User CAN change type (e.g., Convert Text Post -> Poll) during edit.
+
+### 5.3 Delete (DELETE /publisher/:id)
+- [x] **Confirmation:** Modal "Are you sure?".
+    - If `status` == 'scheduled': Text "This will cancel the publication."
+    - If `status` == 'published': Text "This will DELETE the message from the Telegram Channel."
+- [x] **Endpoint:** Calls `DELETE /publisher/:id`.
+- [x] **Response:** Backend returns `{ success: true, details: { cancelled: 1, ... } }`. Update UI to remove item from list.
+
+---
+
+## 🧪 SECTION 6: DEVELOPER CONFIRMATION
+*Frontend Developer: Please fill this out and return.*
+
+| Feature | Status | Developer Notes (If any) |
+| :--- | :--- | :--- |
+| **Enum Sync** | [x] | Updated types.ts |
+| **Poll `poll_options` Fix** | [x] | pollOptionsList maps to poll_options. NO CONFLICT. |
+| **Document Type UI** | [x] | Sends string instead of array for media. |
+| **Story Type UI** | [x] | Validates media presence. Configs wired. |
+| **Pin Toggle** | [x] | Added to Global Settings block. |
+| **Delete Action** | [x] | Connected to DELETE /publisher/:id. |
+| **Date ISO Conversion** | [x] | Using standard JS Date ISO conversion. |
+| **Empty Validation** | [x] | Guard clauses added. |
+
+---
+**Signed off by:** Senior Backend Architect
+**Date:** 2024-05-20

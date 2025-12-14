@@ -52,6 +52,7 @@ export class PublishingProcessor extends WorkerHost {
       const postType = publication.post.type || PostType.POST;
 
       // Common Options (Silent, Protect Content)
+      // Note: content.options refers to generic settings (pin, silent, etc)
       const commonOpts = {
         disable_notification: content.options?.disable_notification,
         protect_content: content.options?.protect_content,
@@ -114,17 +115,28 @@ export class PublishingProcessor extends WorkerHost {
 
       // 3. POLLS (New!)
       else if (postType === PostType.POLL) {
-          if (!content.question || !content.options || content.options.length < 2) {
-              throw new Error('Polls require a question and at least 2 options');
+          // Fix for collision: generic options object vs poll choices array.
+          // We expect the choices to be in 'poll_options' or 'answers'.
+          // Legacy fallback: check if content.options is an array.
+          let choices = content.poll_options || content.answers;
+          
+          if (!choices && Array.isArray(content.options)) {
+             choices = content.options;
+          }
+
+          if (!content.question || !Array.isArray(choices) || choices.length < 2) {
+              throw new Error('Polls require a question and at least 2 options (in "poll_options" or "answers")');
           }
 
           const pollConfig = content.poll_config || {};
+          const isQuiz = pollConfig.type === 'quiz';
           
-          resultMessage = await bot.telegram.sendPoll(chatId, content.question, content.options, {
+          resultMessage = await bot.telegram.sendPoll(chatId, content.question, choices, {
               is_anonymous: pollConfig.is_anonymous ?? true,
               allows_multiple_answers: pollConfig.allows_multiple_answers ?? false,
               type: pollConfig.type || 'regular',
-              correct_option_id: pollConfig.correct_option_id, // Only for quiz
+              // SAFETY: Telegram throws 400 if correct_option_id is present for 'regular' polls
+              correct_option_id: isQuiz ? pollConfig.correct_option_id : undefined, 
               ...commonOpts
           } as any);
       }

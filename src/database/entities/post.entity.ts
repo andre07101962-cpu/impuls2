@@ -31,7 +31,7 @@ export class Post {
    * Type: POLL
    *   content: {
    *     question: string,
-   *     options: string[], // ["Yes", "No"]
+   *     poll_options: string[], // ["Yes", "No"] (Renamed from options to avoid collision)
    *     poll_config: {
    *       is_anonymous: boolean,
    *       allows_multiple_answers: boolean,
