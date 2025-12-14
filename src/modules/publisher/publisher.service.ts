@@ -1,3 +1,4 @@
+
 import { Injectable, BadRequestException, InternalServerErrorException, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, Not } from 'typeorm';
@@ -118,7 +119,7 @@ export class PublisherService {
       content?: any;
       isLiveEdit?: boolean; 
   }) {
-    this.logger.log(`Editing Post ${postId}`);
+    this.logger.log(`Editing Post ${postId} (LiveEdit: ${dto.isLiveEdit})`);
 
     const post = await this.postRepository.findOne({ 
         where: { id: postId },
@@ -128,13 +129,21 @@ export class PublisherService {
     if (!post) throw new NotFoundException('Post not found');
 
     // === LIVE EDITING LOGIC (Telegram API) ===
-    if (dto.isLiveEdit && dto.content) {
-         // This is a complex operation: We try to edit text in Telegram for already published posts
-         await this.performLiveEdit(post, dto.content);
-         // Update DB content so history is correct
-         post.contentPayload = dto.content;
-         await this.postRepository.save(post);
-         return { success: true, message: 'Live edit attempted' };
+    if (dto.isLiveEdit) {
+         // 1. Content Update
+         if (dto.content) {
+             await this.performLiveEdit(post, dto.content);
+             post.contentPayload = dto.content;
+             await this.postRepository.save(post);
+         }
+         
+         // 2. Timer Update (Only deleteAt is allowed for Live Posts)
+         if (dto.deleteAt !== undefined) {
+             const newDeleteDate = dto.deleteAt ? new Date(dto.deleteAt) : null;
+             await this.updatePublicationsTimers(post.id, null, newDeleteDate); // Pass null for publishAt to ignore it
+         }
+
+         return { success: true, message: 'Live edit processed' };
     }
 
     // === STANDARD SCHEDULE EDITING ===
@@ -151,38 +160,14 @@ export class PublisherService {
     }
 
     // 2. Handle Channels (Add/Remove)
-    // ... (Simplified for this response: assuming channels don't change often in edit, focusing on time)
+    // NOTE: Not implemented yet. We assume channels are constant for now.
 
     // 3. Update Time (Publish & Delete)
-    const newPublishDate = dto.publishAt ? new Date(dto.publishAt) : null;
-    const newDeleteDate = dto.deleteAt ? new Date(dto.deleteAt) : (dto.deleteAt === null ? null : undefined); // explicitly null removes it
+    const newPublishDate = dto.publishAt ? new Date(dto.publishAt) : undefined;
+    const newDeleteDate = dto.deleteAt !== undefined ? (dto.deleteAt ? new Date(dto.deleteAt) : null) : undefined;
 
-    const remainingPubs = await this.publicationRepository.find({ where: { postId: post.id } });
-        
-    for (const pub of remainingPubs) {
-        // Handle Publish Time Change
-        if (newPublishDate) {
-            if (pub.jobId) await this.removeJob(pub.jobId);
-            pub.publishAt = newPublishDate;
-            await this.publicationRepository.save(pub);
-            await this.scheduleJob(pub, 'publish', newPublishDate);
-        }
-
-        // Handle Delete Time Change
-        if (newDeleteDate !== undefined) {
-            // Remove old delete job if exists
-            if (pub.deleteJobId) {
-                await this.removeJob(pub.deleteJobId);
-                pub.deleteJobId = null;
-            }
-            
-            pub.deleteAt = newDeleteDate;
-            await this.publicationRepository.save(pub);
-
-            if (newDeleteDate) {
-                await this.scheduleJob(pub, 'delete', newDeleteDate);
-            }
-        }
+    if (newPublishDate || newDeleteDate !== undefined) {
+        await this.updatePublicationsTimers(post.id, newPublishDate, newDeleteDate);
     }
 
     return { success: true, postId };
@@ -220,14 +205,50 @@ export class PublisherService {
 
   // === HELPERS ===
 
+  /**
+   * Updates Redis Timers for all publications of a post.
+   * Pass `undefined` to skip a field, `null` to clear it (for deleteAt).
+   */
+  private async updatePublicationsTimers(postId: string, newPublishAt?: Date, newDeleteAt?: Date | null) {
+    const pubs = await this.publicationRepository.find({ where: { postId } });
+
+    for (const pub of pubs) {
+        // Update Publish Timer
+        if (newPublishAt) {
+            if (pub.jobId) await this.removeJob(pub.jobId);
+            pub.publishAt = newPublishAt;
+            await this.publicationRepository.save(pub);
+            // Only schedule if it's in the future (though for SCHEDULED posts it should be)
+            if (pub.status === PublicationStatus.SCHEDULED) {
+                await this.scheduleJob(pub, 'publish', newPublishAt);
+            }
+        }
+
+        // Update Delete Timer
+        if (newDeleteAt !== undefined) {
+            // 1. Remove existing job
+            if (pub.deleteJobId) {
+                await this.removeJob(pub.deleteJobId);
+                pub.deleteJobId = null;
+            }
+
+            // 2. Set new date
+            pub.deleteAt = newDeleteAt;
+            await this.publicationRepository.save(pub);
+
+            // 3. Schedule new job if date exists
+            if (newDeleteAt) {
+                 await this.scheduleJob(pub, 'delete', newDeleteAt);
+            }
+        }
+    }
+  }
+
   private async scheduleJob(pub: ScheduledPublication, type: 'publish' | 'delete', date: Date) {
       const now = Date.now();
       let delay = date.getTime() - now;
       if (delay < 0) delay = 0;
 
-      // BullMQ allows custom job names. 
-      // 'publish-post' triggers the publishing logic
-      // 'delete-post' triggers the deletion logic
       const jobName = type === 'publish' ? 'publish-post' : 'delete-post';
 
       try {
@@ -269,10 +290,7 @@ export class PublisherService {
                   const { token } = await this.botsService.getBotWithDecryptedToken(pub.channel.ownerBotId);
                   const bot = new Telegraf(token);
                   
-                  // Telegram allows editing Text or Caption.
-                  // It DOES NOT allow switching media types easily via standard API without deleting/resending.
                   if (newContent.text) {
-                      // Attempt to edit text
                       if (post.type === PostType.POST && !post.contentPayload.media) {
                           // Text Message
                           await bot.telegram.editMessageText(
@@ -282,8 +300,8 @@ export class PublisherService {
                               newContent.text, 
                               { parse_mode: 'HTML' }
                           );
-                      } else if (post.contentPayload.media) {
-                          // Caption
+                      } else if (post.contentPayload.media || post.type === PostType.DOCUMENT) {
+                          // Caption (Media or Document)
                           await bot.telegram.editMessageCaption(
                               pub.channel.id, 
                               parseInt(pub.tgMessageId), 
@@ -293,7 +311,6 @@ export class PublisherService {
                           );
                       }
                   }
-                  // TODO: Implement editMessageMedia for changing images
               } catch (e) {
                   this.logger.error(`Live Edit failed for ${pub.id}: ${e.message}`);
               }
