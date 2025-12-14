@@ -126,7 +126,7 @@ export class PublishingProcessor extends WorkerHost {
               type: pollConfig.type || 'regular',
               correct_option_id: pollConfig.correct_option_id, // Only for quiz
               ...commonOpts
-          });
+          } as any);
       }
 
       // 4. DOCUMENTS (New!)
