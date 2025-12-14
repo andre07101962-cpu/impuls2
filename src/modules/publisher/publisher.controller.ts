@@ -1,4 +1,4 @@
-import { Controller, Post, Patch, Get, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Post, Patch, Get, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { PublisherService } from './publisher.service';
 import { IsArray, IsString, IsNotEmpty, IsObject, IsOptional, IsEnum } from 'class-validator';
@@ -11,6 +11,8 @@ enum PostType {
   POST = 'post',
   STORY = 'story',
   PAID_MEDIA = 'paid_media',
+  POLL = 'poll',
+  DOCUMENT = 'document',
 }
 
 class SchedulePostDto {
@@ -19,9 +21,9 @@ class SchedulePostDto {
         text: "Hidden Content", 
         media: ["https://..."], 
         paid_config: { star_count: 50 },
-        options: { has_spoiler: true }
+        options: { has_spoiler: true, pin: true }
     },
-    description: "Supports standard posts, stories, and paid media objects"
+    description: "Supports standard posts, stories, polls, documents and paid media objects"
   })
   @IsObject()
   content: any;
@@ -72,14 +74,10 @@ export class PublisherController {
   }
 
   @Post('schedule')
-  @ApiOperation({ summary: 'Schedule a post (Feed, Story, or Paid Media)' })
+  @ApiOperation({ summary: 'Schedule a post (Feed, Story, Poll, Doc, or Paid Media)' })
   schedule(@Body() dto: SchedulePostDto) {
     // Inject the 'type' into the content payload for persistence if not already there
     const contentWithType = { ...dto.content, type: dto.type || PostType.POST };
-    
-    // We pass the raw content (which now includes type) to the service
-    // The service saves this whole blob into post.contentPayload
-    // However, we also need to save post.type in the entity column for filtering
     return this.publisherService.schedulePost(contentWithType, dto.channelIds, dto.publishAt);
   }
 
@@ -87,5 +85,11 @@ export class PublisherController {
   @ApiOperation({ summary: 'Edit a scheduled post (Time, Content, or Channels)' })
   edit(@Param('id') id: string, @Body() dto: EditPostDto) {
     return this.publisherService.editScheduledPost(id, dto);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Delete a post. If scheduled: cancels. If published: deletes from Telegram.' })
+  delete(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.publisherService.deletePost(user.id, id);
   }
 }

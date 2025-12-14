@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, InternalServerErrorException, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, Not } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -6,6 +6,8 @@ import { Queue, Job } from 'bullmq';
 import { Post, PostType } from '../../database/entities/post.entity';
 import { ScheduledPublication, PublicationStatus } from '../../database/entities/scheduled-publication.entity';
 import { Channel } from '../../database/entities/channel.entity';
+import { BotsService } from '../bots/bots.service';
+import { Telegraf } from 'telegraf';
 
 @Injectable()
 export class PublisherService {
@@ -19,6 +21,7 @@ export class PublisherService {
     @InjectRepository(Channel)
     private channelRepository: Repository<Channel>,
     @InjectQueue('publishing') private publishingQueue: Queue,
+    private botsService: BotsService,
   ) {}
 
   async getPublicationsByUser(userId: string) {
@@ -206,6 +209,66 @@ export class PublisherService {
     }
 
     return { success: true, postId };
+  }
+
+  async deletePost(userId: string, postId: string) {
+      this.logger.log(`User ${userId} requested delete for post ${postId}`);
+      
+      const post = await this.postRepository.findOne({ 
+          where: { id: postId },
+          relations: ['publications', 'publications.channel', 'publications.channel.bot']
+      });
+
+      if (!post) throw new NotFoundException('Post not found');
+
+      // Security Check: Ensure user owns the bot that owns the channels
+      // We check the first publication for efficiency
+      if (post.publications.length > 0) {
+          const ownerId = post.publications[0].channel.bot.userId;
+          if (ownerId !== userId) throw new ForbiddenException('You do not own this post');
+      }
+
+      const results = {
+          cancelled: 0,
+          deletedFromTelegram: 0,
+          errors: 0
+      };
+
+      for (const pub of post.publications) {
+          // 1. If Scheduled: Cancel Job
+          if (pub.status === PublicationStatus.SCHEDULED) {
+              if (pub.jobId) {
+                  try {
+                      const job = await Job.fromId(this.publishingQueue, pub.jobId);
+                      if (job) await job.remove();
+                      results.cancelled++;
+                  } catch (e) {
+                      this.logger.warn(`Failed to cancel job ${pub.jobId}: ${e.message}`);
+                  }
+              }
+          }
+          // 2. If Published: Delete from Telegram
+          else if (pub.status === PublicationStatus.PUBLISHED && pub.tgMessageId) {
+              try {
+                  const { token } = await this.botsService.getBotWithDecryptedToken(pub.channel.ownerBotId);
+                  const bot = new Telegraf(token);
+                  await bot.telegram.deleteMessage(pub.channel.id, parseInt(pub.tgMessageId));
+                  results.deletedFromTelegram++;
+              } catch (e) {
+                  this.logger.warn(`Failed to delete message ${pub.tgMessageId} in channel ${pub.channel.id}: ${e.message}`);
+                  results.errors++;
+              }
+          }
+          
+          await this.publicationRepository.remove(pub);
+      }
+
+      await this.postRepository.remove(post);
+
+      return {
+          success: true,
+          details: results
+      };
   }
 
   private async removeJobAndPublication(pub: ScheduledPublication) {

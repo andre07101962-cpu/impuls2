@@ -112,7 +112,39 @@ export class PublishingProcessor extends WorkerHost {
           });
       }
 
-      // 3. STANDARD POSTS
+      // 3. POLLS (New!)
+      else if (postType === PostType.POLL) {
+          if (!content.question || !content.options || content.options.length < 2) {
+              throw new Error('Polls require a question and at least 2 options');
+          }
+
+          const pollConfig = content.poll_config || {};
+          
+          resultMessage = await bot.telegram.sendPoll(chatId, content.question, content.options, {
+              is_anonymous: pollConfig.is_anonymous ?? true,
+              allows_multiple_answers: pollConfig.allows_multiple_answers ?? false,
+              type: pollConfig.type || 'regular',
+              correct_option_id: pollConfig.correct_option_id, // Only for quiz
+              ...commonOpts
+          });
+      }
+
+      // 4. DOCUMENTS (New!)
+      else if (postType === PostType.DOCUMENT) {
+          if (!content.media) throw new Error('Document post requires a file URL (media)');
+          
+          const fileUrl = Array.isArray(content.media) ? content.media[0] : content.media;
+          
+          resultMessage = await bot.telegram.sendDocument(chatId, fileUrl, {
+              caption: content.text,
+              reply_markup,
+              parse_mode: 'HTML',
+              disable_notification: commonOpts.disable_notification,
+              protect_content: commonOpts.protect_content
+          });
+      }
+
+      // 5. STANDARD POSTS
       else {
         // A. Media Group (Album)
         if (content.media && Array.isArray(content.media) && content.media.length > 1) {
@@ -131,7 +163,7 @@ export class PublishingProcessor extends WorkerHost {
                 disable_notification: commonOpts.disable_notification,
                 protect_content: commonOpts.protect_content
             });
-            resultMessage = msgs[0];
+            resultMessage = msgs[0]; // Capture first message for ID
         } 
         
         // B. Single Video
@@ -169,7 +201,21 @@ export class PublishingProcessor extends WorkerHost {
         }
       }
 
-      // === SUCCESS ===
+      // === POST-PUBLISHING ACTIONS ===
+
+      // Handle Pinning
+      if (resultMessage && resultMessage.message_id && content.options?.pin) {
+          try {
+              await bot.telegram.pinChatMessage(chatId, resultMessage.message_id, {
+                  disable_notification: commonOpts.disable_notification
+              });
+              this.logger.log(`Pinned message ${resultMessage.message_id} in ${chatId}`);
+          } catch (pinError) {
+              this.logger.warn(`Failed to pin message: ${pinError.message}`);
+          }
+      }
+
+      // === SUCCESS STATE ===
       publication.status = PublicationStatus.PUBLISHED;
       // Stories/PaidMedia return different objects, but usually contain message_id (or similar identifier)
       publication.tgMessageId = resultMessage?.message_id?.toString() || '0';

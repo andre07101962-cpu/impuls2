@@ -2,9 +2,11 @@ import { Entity, Column, PrimaryGeneratedColumn, OneToMany, CreateDateColumn, Up
 import { ScheduledPublication } from './scheduled-publication.entity';
 
 export enum PostType {
-  POST = 'post',             // Standard Feed Post
+  POST = 'post',             // Standard Feed Post (Text/Image/Video)
   STORY = 'story',           // Telegram Story
   PAID_MEDIA = 'paid_media', // Hidden behind Stars
+  POLL = 'poll',             // Quiz or Regular Poll
+  DOCUMENT = 'document',     // Files (PDF, ZIP, etc)
 }
 
 @Entity('posts')
@@ -17,22 +19,32 @@ export class Post {
 
   /**
    * Payload Structure:
-   * {
-   *   text: string,
-   *   media: string | string[] | { type: 'photo'|'video', url: string }[],
-   *   buttons: InlineButton[][],
+   * 
+   * Common Options:
    *   options: {
    *     disable_notification: boolean,
    *     protect_content: boolean,
-   *     has_spoiler: boolean
-   *   },
-   *   paid_config: {
-   *     star_count: number
-   *   },
-   *   story_config: {
-   *     period: number // hours
+   *     has_spoiler: boolean,
+   *     pin: boolean // <--- NEW: Pin after posting
    *   }
-   * }
+   * 
+   * Type: POLL
+   *   content: {
+   *     question: string,
+   *     options: string[], // ["Yes", "No"]
+   *     poll_config: {
+   *       is_anonymous: boolean,
+   *       allows_multiple_answers: boolean,
+   *       type: 'regular' | 'quiz',
+   *       correct_option_id: number // if quiz
+   *     }
+   *   }
+   * 
+   * Type: DOCUMENT
+   *   content: {
+   *     media: string, // URL to file
+   *     text: string // Caption
+   *   }
    */
   @Column({ name: 'content_payload', type: 'jsonb' })
   contentPayload: any;
