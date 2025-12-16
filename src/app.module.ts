@@ -62,9 +62,9 @@ import { ForumTopic } from './database/entities/forum-topic.entity';
           synchronize: false, 
           ssl: { rejectUnauthorized: false },
           extra: {
-            // 🚀 PERF: Увеличенный пул для 10k+ каналов
-            // Если используем Supabase Transaction Pooler (Port 6543), тут можно ставить хоть 50
-            max: 50, 
+            // ⚠️ MEMORY OPTIMIZATION: Reduced pool for Free Tier (512MB RAM)
+            // Was 50, changed to 5 to prevent OOM
+            max: 5, 
             connectionTimeoutMillis: 10000,
             idleTimeoutMillis: 30000,
             keepAlive: true,
