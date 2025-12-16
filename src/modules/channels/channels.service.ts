@@ -281,10 +281,16 @@ export class ChannelsService {
     // 🔍 DEEP LOGGING: Analyze what we are dealing with
     this.logger.debug(`📥 REGISTERING CHANNEL [${channelId}]: ${JSON.stringify(chatObj, null, 2)}`);
 
+    // 1. Fetch Existing Entity FIRST (Critical for safe updates)
+    const existing = await this.channelRepository.findOne({ where: { id: channelId } });
+
     let title = chatObj.title || 'Untitled';
     let photoUrl = null;
     let membersCount = 0;
-    let linkedChatId = null;
+    
+    // Default to existing link to prevent accidental null overwrite on API failure
+    let linkedChatId = existing ? existing.linkedChatId : null;
+    
     let type = chatObj.type || ChannelType.CHANNEL;
     let isForum = !!chatObj.is_forum;
     let username = chatObj.username || null;
@@ -302,13 +308,19 @@ export class ChannelsService {
             type = fullChat.type; // supergroup, channel, group, private
             isForum = !!fullChat.is_forum;
 
-            linkedChatId = fullChat.linked_chat_id 
-                ? fullChat.linked_chat_id.toString() 
-                : null;
-            
-            // If the chat itself is a forum (Supergroup with topics), it is its own link
-            if (isForum) {
-                linkedChatId = channelId;
+            // ⚡ CORE FIX: Correctly extract linked_chat_id
+            if (fullChat.linked_chat_id) {
+                linkedChatId = fullChat.linked_chat_id.toString();
+                this.logger.log(`🔗 FOUND LINKED CHAT for ${channelId}: ${linkedChatId}`);
+            } else {
+                // Only explicitly set to null if the API call succeeded and confirmed NO link
+                // But if this is a Forum (Self-linked), force self
+                if (isForum) {
+                    linkedChatId = channelId;
+                } else if (fullChat.type === 'channel') {
+                    // It is a channel, API worked, but no link returned -> User might have unlinked it
+                    linkedChatId = null;
+                }
             }
 
             if (chatInfo.photo) {
@@ -317,15 +329,15 @@ export class ChannelsService {
             }
             membersCount = await bot.telegram.getChatMembersCount(channelId).catch(() => 0);
         } catch (apiError) {
-            this.logger.warn(`API Sync failed for ${channelId} (${apiError.message}). Using Webhook payload data.`);
+            this.logger.warn(`API Sync failed for ${channelId} (${apiError.message}). Using Webhook/DB payload.`);
+            
             // Fallback to webhook data
             if (chatObj.is_forum) {
                 isForum = true;
                 linkedChatId = channelId;
             }
+            // If API failed, we KEEP the `linkedChatId` from `existing` (initialized above).
         }
-
-        const existing = await this.channelRepository.findOne({ where: { id: channelId } });
         
         if (existing) {
             existing.title = title;
@@ -334,7 +346,10 @@ export class ChannelsService {
             existing.isForum = isForum;
             existing.membersCount = membersCount > 0 ? membersCount : existing.membersCount;
             if (photoUrl) existing.photoUrl = photoUrl;
-            if (linkedChatId) existing.linkedChatId = linkedChatId;
+            
+            // Only update if we have a valid resolution (null or value)
+            existing.linkedChatId = linkedChatId; 
+            
             existing.isActive = true;
             return this.channelRepository.save(existing);
         }

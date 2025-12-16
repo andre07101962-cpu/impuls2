@@ -38,7 +38,18 @@ export class BotUpdatesController {
         }
       }
 
-      // 3. Handle Messages & Service Events
+      // 3. Handle 'channel_post' (New Post in Channel -> Trigger Sync)
+      // This ensures that if a Linked Chat is added LATER, the first post will pick it up.
+      if (update.channel_post) {
+          const post = update.channel_post;
+          const chatId = post.chat.id.toString();
+          
+          // Only sync if we suspect metadata might need refresh (or just always for robustness)
+          // We pass the chat object directly to reuse the logic
+          await this.channelsService.registerChannelFromWebhook(botId, post.chat);
+      }
+
+      // 4. Handle Messages & Service Events (Groups/Private)
       if (update.message) {
         const msg = update.message;
         const chatId = msg.chat.id.toString();
