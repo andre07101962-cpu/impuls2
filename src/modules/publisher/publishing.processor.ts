@@ -33,7 +33,6 @@ export class PublishingProcessor extends WorkerHost {
 
   private async processPublishing(job: Job<{ publicationId: string }>) {
     const { publicationId } = job.data;
-    // this.logger.log(`Processing PUBLISH ${publicationId}`); // Commented out to reduce noise
 
     const publication = await this.publicationRepository.findOne({
       where: { id: publicationId },
@@ -49,14 +48,30 @@ export class PublishingProcessor extends WorkerHost {
       const { token } = await this.botsService.getBotWithDecryptedToken(publication.channel.ownerBotId);
       const bot = new Telegraf(token);
       
-      const chatId = publication.channel.id;
+      const channel = publication.channel;
+      // 🚀 TARGETING: If topicId provided in payload, use linkedChatId + message_thread_id
+      // OR if it's a channel post, just use channelId
+      let targetChatId = channel.id;
+      let messageThreadId = undefined;
+
       const content = publication.post.contentPayload; 
+      
+      if (content.options?.topic_id) {
+         if (!channel.linkedChatId) {
+             throw new Error('Cannot post to a topic: Channel has no linked chat (Discussion Group).');
+         }
+         // When posting to a Topic, we send to the SUPERGROUP ID, not the Channel ID
+         targetChatId = channel.linkedChatId;
+         messageThreadId = content.options.topic_id;
+      }
+
       const postType = publication.post.type || PostType.POST;
 
       const commonOpts = {
         disable_notification: content.options?.disable_notification,
         protect_content: content.options?.protect_content,
         parse_mode: 'HTML' as const,
+        message_thread_id: messageThreadId, // <--- New: Support Topics
       };
 
       let reply_markup = undefined;
@@ -74,7 +89,7 @@ export class PublishingProcessor extends WorkerHost {
               media: url
           }));
           resultMessage = await bot.telegram.callApi('sendPaidMedia' as any, {
-              chat_id: chatId,
+              chat_id: targetChatId,
               star_count: content.paid_config?.star_count || 1,
               media: inputPaidMedia,
               caption: content.text,
@@ -83,9 +98,11 @@ export class PublishingProcessor extends WorkerHost {
           });
       }
       else if (postType === PostType.STORY) {
+          // Stories are ONLY for Channels, not topics
+          if (messageThreadId) throw new Error('Cannot post Stories to a Topic.');
           const mediaUrl = Array.isArray(content.media) ? content.media[0] : content.media;
           resultMessage = await bot.telegram.callApi('sendStory' as any, {
-              chat_id: chatId,
+              chat_id: targetChatId,
               media: { type: mediaUrl.endsWith('.mp4') ? 'video' : 'photo', media: mediaUrl },
               caption: content.text,
               period: content.story_config?.period || 86400,
@@ -95,7 +112,7 @@ export class PublishingProcessor extends WorkerHost {
           let choices = content.poll_options || content.answers || content.options;
           const pollConfig = content.poll_config || {};
           const isQuiz = pollConfig.type === 'quiz';
-          resultMessage = await bot.telegram.sendPoll(chatId, content.question, choices, {
+          resultMessage = await bot.telegram.sendPoll(targetChatId, content.question, choices, {
               is_anonymous: pollConfig.is_anonymous ?? true,
               allows_multiple_answers: pollConfig.allows_multiple_answers ?? false,
               type: pollConfig.type || 'regular',
@@ -105,7 +122,7 @@ export class PublishingProcessor extends WorkerHost {
       }
       else if (postType === PostType.DOCUMENT) {
           const fileUrl = Array.isArray(content.media) ? content.media[0] : content.media;
-          resultMessage = await bot.telegram.sendDocument(chatId, fileUrl, {
+          resultMessage = await bot.telegram.sendDocument(targetChatId, fileUrl, {
               caption: content.text,
               reply_markup,
               ...commonOpts
@@ -121,25 +138,25 @@ export class PublishingProcessor extends WorkerHost {
                    caption: i === 0 ? content.text : '',
                    parse_mode: 'HTML'
                }));
-               const msgs = await bot.telegram.sendMediaGroup(chatId, mediaGroup as any, commonOpts);
+               const msgs = await bot.telegram.sendMediaGroup(targetChatId, mediaGroup as any, commonOpts);
                resultMessage = msgs[0];
           } else if (content.media) {
                // Single Media
                const url = Array.isArray(content.media) ? content.media[0] : content.media;
                if (url.endsWith('.mp4')) {
-                   resultMessage = await bot.telegram.sendVideo(chatId, url, { caption: content.text, reply_markup, ...commonOpts });
+                   resultMessage = await bot.telegram.sendVideo(targetChatId, url, { caption: content.text, reply_markup, ...commonOpts });
                } else {
-                   resultMessage = await bot.telegram.sendPhoto(chatId, url, { caption: content.text, reply_markup, ...commonOpts });
+                   resultMessage = await bot.telegram.sendPhoto(targetChatId, url, { caption: content.text, reply_markup, ...commonOpts });
                }
           } else {
                // Text
-               resultMessage = await bot.telegram.sendMessage(chatId, content.text, { reply_markup, ...commonOpts });
+               resultMessage = await bot.telegram.sendMessage(targetChatId, content.text, { reply_markup, ...commonOpts });
           }
       }
 
       // Pin if requested
       if (resultMessage && resultMessage.message_id && content.options?.pin) {
-          await bot.telegram.pinChatMessage(chatId, resultMessage.message_id, { disable_notification: commonOpts.disable_notification }).catch(() => {});
+          await bot.telegram.pinChatMessage(targetChatId, resultMessage.message_id, { disable_notification: commonOpts.disable_notification }).catch(() => {});
       }
 
       publication.status = PublicationStatus.PUBLISHED;
@@ -147,7 +164,7 @@ export class PublishingProcessor extends WorkerHost {
       publication.publishAt = new Date(); 
       await this.publicationRepository.save(publication);
 
-      this.logger.log(`✅ PUBLISHED: ${postType} -> ${chatId}`);
+      this.logger.log(`✅ PUBLISHED: ${postType} -> ${targetChatId} ${messageThreadId ? `(Topic: ${messageThreadId})` : ''}`);
 
     } catch (error: any) {
       
@@ -175,10 +192,9 @@ export class PublishingProcessor extends WorkerHost {
   }
 
   private async processDeletion(publicationId: string) {
-      // ... (Same deletion logic, just cleaner logging)
       const publication = await this.publicationRepository.findOne({
           where: { id: publicationId },
-          relations: ['channel', 'channel.bot']
+          relations: ['channel', 'channel.bot', 'post']
       });
 
       if (!publication || !publication.tgMessageId) return;
@@ -186,7 +202,14 @@ export class PublishingProcessor extends WorkerHost {
       try {
           const { token } = await this.botsService.getBotWithDecryptedToken(publication.channel.ownerBotId);
           const bot = new Telegraf(token);
-          await bot.telegram.deleteMessage(publication.channel.id, parseInt(publication.tgMessageId));
+          
+          // Detect Target (Channel or Topic Group)
+          let targetChatId = publication.channel.id;
+          if (publication.post.contentPayload?.options?.topic_id && publication.channel.linkedChatId) {
+              targetChatId = publication.channel.linkedChatId;
+          }
+
+          await bot.telegram.deleteMessage(targetChatId, parseInt(publication.tgMessageId));
           
           publication.status = PublicationStatus.DELETED;
           await this.publicationRepository.save(publication);

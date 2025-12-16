@@ -2,6 +2,7 @@ import { Entity, Column, PrimaryColumn, ManyToOne, OneToMany, JoinColumn, Create
 import { UserBot } from './user-bot.entity';
 import { AdSlot } from './ad-slot.entity';
 import { ScheduledPublication } from './scheduled-publication.entity';
+import { ForumTopic } from './forum-topic.entity';
 
 @Entity('channels')
 export class Channel {
@@ -21,6 +22,10 @@ export class Channel {
   @Column({ name: 'is_active', default: true })
   isActive: boolean;
 
+  // ID of the linked discussion group (Supergroup)
+  @Column({ name: 'linked_chat_id', type: 'bigint', nullable: true })
+  linkedChatId: string;
+
   @Column({ type: 'jsonb', default: {} })
   settings: any;
 
@@ -36,6 +41,9 @@ export class Channel {
 
   @OneToMany(() => ScheduledPublication, (pub) => pub.channel)
   scheduledPublications: ScheduledPublication[];
+
+  @OneToMany(() => ForumTopic, (topic) => topic.channel)
+  topics: ForumTopic[];
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

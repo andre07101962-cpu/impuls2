@@ -20,6 +20,7 @@ import { ScheduledPublication } from './database/entities/scheduled-publication.
 import { Campaign } from './database/entities/campaign.entity';
 import { Participant } from './database/entities/participant.entity';
 import { AdSlot } from './database/entities/ad-slot.entity';
+import { ForumTopic } from './database/entities/forum-topic.entity';
 
 @Module({
   imports: [
@@ -55,7 +56,8 @@ import { AdSlot } from './database/entities/ad-slot.entity';
           url: url,
           entities: [
             User, UserBot, Channel, Post, 
-            ScheduledPublication, Campaign, Participant, AdSlot
+            ScheduledPublication, Campaign, Participant, AdSlot,
+            ForumTopic
           ],
           synchronize: false, 
           ssl: { rejectUnauthorized: false },

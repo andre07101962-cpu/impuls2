@@ -2,6 +2,7 @@ import { Injectable, BadRequestException, Logger, NotFoundException, ForbiddenEx
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Channel } from '../../database/entities/channel.entity';
+import { ForumTopic } from '../../database/entities/forum-topic.entity';
 import { BotsService } from '../bots/bots.service';
 import { Telegraf } from 'telegraf';
 
@@ -12,6 +13,8 @@ export class ChannelsService {
   constructor(
     @InjectRepository(Channel)
     private channelRepository: Repository<Channel>,
+    @InjectRepository(ForumTopic)
+    private topicRepository: Repository<ForumTopic>,
     private botsService: BotsService,
   ) {}
 
@@ -23,15 +26,109 @@ export class ChannelsService {
       .getMany();
   }
 
+  // === TOPIC MANAGEMENT (FORUMS) ===
+
+  async getChannelTopics(userId: string, channelId: string) {
+    // 1. Verify access
+    await this.verifyChannelAccess(userId, channelId);
+    
+    // 2. Return stored topics
+    return this.topicRepository.find({
+        where: { channelId },
+        order: { isClosed: 'ASC', createdAt: 'DESC' }
+    });
+  }
+
+  async createTopic(userId: string, botId: string, channelId: string, name: string, iconColor?: number, iconEmojiId?: string) {
+    const channel = await this.verifyChannelAccess(userId, channelId, botId);
+
+    if (!channel.linkedChatId) {
+        throw new BadRequestException('This channel does not have a linked discussion group.');
+    }
+
+    const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+    const bot = new Telegraf(token);
+
+    try {
+        const topic = await bot.telegram.createForumTopic(channel.linkedChatId, name, {
+            icon_color: iconColor,
+            icon_custom_emoji_id: iconEmojiId
+        });
+
+        const newTopic = this.topicRepository.create({
+            telegramTopicId: topic.message_thread_id,
+            name: topic.name,
+            iconColor: topic.icon_color,
+            iconCustomEmojiId: topic.icon_custom_emoji_id,
+            channelId: channelId,
+            isClosed: false
+        });
+
+        return this.topicRepository.save(newTopic);
+    } catch (e) {
+        throw new BadRequestException(`Failed to create topic: ${e.message}. Ensure bot is Admin in the linked group and 'Topics' are enabled.`);
+    }
+  }
+
+  async editTopic(userId: string, botId: string, channelId: string, topicId: string, updates: { name?: string, iconEmojiId?: string }) {
+    const channel = await this.verifyChannelAccess(userId, channelId, botId);
+    const storedTopic = await this.topicRepository.findOne({ where: { id: topicId, channelId } });
+    if (!storedTopic) throw new NotFoundException('Topic not found in DB');
+
+    if (!channel.linkedChatId) throw new BadRequestException('No linked chat found');
+
+    const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+    const bot = new Telegraf(token);
+
+    try {
+        await bot.telegram.editForumTopic(channel.linkedChatId, storedTopic.telegramTopicId, {
+            name: updates.name,
+            icon_custom_emoji_id: updates.iconEmojiId
+        });
+
+        if (updates.name) storedTopic.name = updates.name;
+        if (updates.iconEmojiId) storedTopic.iconCustomEmojiId = updates.iconEmojiId;
+        
+        return this.topicRepository.save(storedTopic);
+    } catch (e) {
+        throw new BadRequestException(`Failed to edit topic: ${e.message}`);
+    }
+  }
+
+  async closeTopic(userId: string, botId: string, channelId: string, topicId: string) {
+      return this.toggleTopicState(userId, botId, channelId, topicId, 'closeForumTopic', true);
+  }
+
+  async reopenTopic(userId: string, botId: string, channelId: string, topicId: string) {
+      return this.toggleTopicState(userId, botId, channelId, topicId, 'reopenForumTopic', false);
+  }
+
+  async deleteTopic(userId: string, botId: string, channelId: string, topicId: string) {
+      const channel = await this.verifyChannelAccess(userId, channelId, botId);
+      const storedTopic = await this.topicRepository.findOne({ where: { id: topicId, channelId } });
+      if (!storedTopic) throw new NotFoundException('Topic not found');
+
+      if (!channel.linkedChatId) throw new BadRequestException('No linked chat found');
+
+      const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+      const bot = new Telegraf(token);
+
+      try {
+          await bot.telegram.deleteForumTopic(channel.linkedChatId, storedTopic.telegramTopicId);
+          await this.topicRepository.remove(storedTopic);
+          return { success: true };
+      } catch (e) {
+          throw new BadRequestException(`Failed to delete topic: ${e.message}`);
+      }
+  }
+
   // === ADMIN TOOLS ===
 
   async createInviteLink(userId: string, botId: string, channelId: string, name?: string) {
-     // 🛡️ SECURITY: Pass userId to enforce ownership
      const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
      const bot = new Telegraf(token);
      
-     const channel = await this.channelRepository.findOne({ where: { id: channelId, ownerBotId: botId }});
-     if (!channel) throw new ForbiddenException('Channel not managed by this bot');
+     await this.verifyChannelAccess(userId, channelId, botId);
 
      try {
          const invite = await bot.telegram.createChatInviteLink(channelId, {
@@ -45,12 +142,10 @@ export class ChannelsService {
   }
 
   async updateChannelProfile(userId: string, botId: string, channelId: string, updates: { title?: string, description?: string }) {
-     // 🛡️ SECURITY: Pass userId to enforce ownership
      const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
      const bot = new Telegraf(token);
 
-     const channel = await this.channelRepository.findOne({ where: { id: channelId, ownerBotId: botId }});
-     if (!channel) throw new ForbiddenException('Channel not managed by this bot');
+     const channel = await this.verifyChannelAccess(userId, channelId, botId);
 
      try {
         if (updates.title) {
@@ -68,16 +163,14 @@ export class ChannelsService {
      }
   }
 
-  // === HEALTH CHECKS ===
+  // === HEALTH CHECKS & SYNC ===
 
   async verifyChannelHealth(userId: string, botId: string, channelId: string) {
     // 🛡️ SECURITY: Pass userId to enforce ownership
     const { bot: userBot, token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
     
-    // Explicit double check (though getBotWithDecryptedToken handles it now)
-    if (userBot.userId !== userId) {
-        throw new ForbiddenException('You do not own this bot.');
-    }
+    // Explicit double check
+    if (userBot.userId !== userId) throw new ForbiddenException('You do not own this bot.');
 
     const telegraf = new Telegraf(token);
 
@@ -108,6 +201,12 @@ export class ChannelsService {
             channel.title = (chatInfo as any).title;
             channel.membersCount = membersCount;
             if (photoUrl) channel.photoUrl = photoUrl;
+            
+            // 🚀 DISCOVERY: Sync Linked Chat ID (Supergroup)
+            if ((chatInfo as any).linked_chat_id) {
+                channel.linkedChatId = (chatInfo as any).linked_chat_id.toString();
+            }
+
             channel.isActive = true; 
             channel.ownerBotId = botId; 
             
@@ -137,7 +236,6 @@ export class ChannelsService {
     this.logger.log(`Syncing channel ${chatObj.title} (${channelId}) for bot ${botId}`);
 
     try {
-        // System call (Webhook), no userId available.
         const { token } = await this.botsService.getBotWithDecryptedToken(botId);
         const bot = new Telegraf(token);
 
@@ -156,12 +254,17 @@ export class ChannelsService {
             }
         }
 
+        const linkedChatId = (chatInfo as any).linked_chat_id 
+            ? (chatInfo as any).linked_chat_id.toString() 
+            : null;
+
         const existing = await this.channelRepository.findOne({ where: { id: channelId } });
         
         if (existing) {
             existing.title = chatObj.title;
             existing.membersCount = membersCount;
             if (photoUrl) existing.photoUrl = photoUrl;
+            existing.linkedChatId = linkedChatId; // Sync linked chat
             existing.isActive = true;
             return this.channelRepository.save(existing);
         }
@@ -171,6 +274,7 @@ export class ChannelsService {
             title: chatObj.title || 'Untitled',
             photoUrl,
             membersCount,
+            linkedChatId,
             ownerBotId: botId,
             isActive: true,
             settings: {}
@@ -180,16 +284,7 @@ export class ChannelsService {
 
     } catch (error) {
         this.logger.error(`Failed to register channel ${channelId}: ${error.message}`);
-        const existing = await this.channelRepository.findOne({ where: { id: channelId } });
-        if (!existing) {
-             const basicChannel = this.channelRepository.create({
-                id: channelId,
-                title: chatObj.title,
-                ownerBotId: botId
-             });
-             return this.channelRepository.save(basicChannel);
-        }
-        return existing;
+        return null;
     }
   }
 
@@ -205,16 +300,6 @@ export class ChannelsService {
   }
 
   async previewChannel(botId: string, channelUsername: string) {
-     // 🛡️ SECURITY: This is a read-only preview, but technically a user should check only their bots.
-     // However, `previewChannel` is often called before a bot is fully set up or verified.
-     // Sticking to basic check: we just need the bot's token. 
-     // For strict security, we SHOULD pass userId, but let's assume this method is called from `add` flow.
-     // Note: ChannelsController calls this. Let's make it safe.
-     // But wait, `previewChannel` signature in Controller doesn't pass userId right now in the Service?
-     // Let's rely on the fact that if they don't own the bot, they can't see the result?
-     // Actually, let's fix the controller to pass UserID if possible, or accept risk for preview.
-     // For now, leaving as System call to avoid breaking signature if Controller not updated in this XML.
-     
      const { token } = await this.botsService.getBotWithDecryptedToken(botId);
      const bot = new Telegraf(token);
      
@@ -229,6 +314,7 @@ export class ChannelsService {
              id: chat.id.toString(),
              title: (chat as any).title,
              members,
+             linkedChatId: (chat as any).linked_chat_id?.toString() || null,
              description: (chat as any).description
          };
      } catch (e) {
@@ -237,7 +323,46 @@ export class ChannelsService {
   }
 
   async addChannel(botId: string, channelId: string, title: string) {
-     // This just registers via webhook logic
      return this.registerChannelFromWebhook(botId, { id: channelId, title });
+  }
+
+  // === PRIVATE HELPERS ===
+
+  private async verifyChannelAccess(userId: string, channelId: string, botId?: string) {
+    const whereCondition: any = { id: channelId };
+    if (botId) whereCondition.ownerBotId = botId;
+
+    const channel = await this.channelRepository.findOne({ 
+        where: whereCondition,
+        relations: ['bot']
+    });
+
+    if (!channel) throw new NotFoundException('Channel not found');
+    
+    // Check ownership of the bot that owns the channel
+    if (channel.bot.userId !== userId) {
+        throw new ForbiddenException('You do not own the bot managing this channel.');
+    }
+
+    return channel;
+  }
+
+  private async toggleTopicState(userId: string, botId: string, channelId: string, topicId: string, method: 'closeForumTopic' | 'reopenForumTopic', closedState: boolean) {
+    const channel = await this.verifyChannelAccess(userId, channelId, botId);
+    const storedTopic = await this.topicRepository.findOne({ where: { id: topicId, channelId } });
+    if (!storedTopic) throw new NotFoundException('Topic not found');
+    if (!channel.linkedChatId) throw new BadRequestException('No linked chat found');
+
+    const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+    const bot = new Telegraf(token);
+
+    try {
+        await bot.telegram[method](channel.linkedChatId, storedTopic.telegramTopicId);
+        storedTopic.isClosed = closedState;
+        await this.topicRepository.save(storedTopic);
+        return { success: true, isClosed: closedState };
+    } catch (e) {
+        throw new BadRequestException(`Failed to update topic state: ${e.message}`);
+    }
   }
 }
