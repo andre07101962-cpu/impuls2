@@ -4,6 +4,13 @@ import { AdSlot } from './ad-slot.entity';
 import { ScheduledPublication } from './scheduled-publication.entity';
 import { ForumTopic } from './forum-topic.entity';
 
+export enum ChannelType {
+  CHANNEL = 'channel',
+  SUPERGROUP = 'supergroup',
+  GROUP = 'group',
+  PRIVATE = 'private',
+}
+
 @Entity('channels')
 export class Channel {
   // Telegram Channel ID is BigInt and static, so we don't use UUID here
@@ -12,6 +19,15 @@ export class Channel {
 
   @Column({ nullable: true })
   title: string;
+
+  @Column({ nullable: true })
+  username: string;
+
+  @Column({ type: 'enum', enum: ChannelType, default: ChannelType.CHANNEL })
+  type: ChannelType;
+
+  @Column({ name: 'is_forum', default: false })
+  isForum: boolean;
 
   @Column({ name: 'photo_url', nullable: true })
   photoUrl: string;
