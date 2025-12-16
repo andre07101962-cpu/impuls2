@@ -52,7 +52,11 @@ export class BotUpdatesController {
           }
           if (post.new_chat_photo) {
               this.logger.log(`📸 Channel Photo Changed`);
-              await this.channelsService.registerChannelFromWebhook(botId, post.chat); // Will fetch new photo URL
+              await this.channelsService.registerChannelFromWebhook(botId, post.chat); 
+          }
+          if (post.delete_chat_photo) {
+              this.logger.log(`🗑️ Channel Photo Deleted`);
+              await this.channelsService.updateChannelPhoto(post.chat.id.toString(), null);
           }
       }
 
@@ -75,6 +79,10 @@ export class BotUpdatesController {
              this.logger.log(`📸 Group Photo Changed`);
              await this.channelsService.registerChannelFromWebhook(botId, msg.chat);
         }
+        if (msg.delete_chat_photo) {
+             this.logger.log(`🗑️ Group Photo Deleted`);
+             await this.channelsService.updateChannelPhoto(chatId, null);
+        }
 
         // C. Handle Topic Creation
         if (msg.forum_topic_created) {
@@ -90,6 +98,8 @@ export class BotUpdatesController {
         // D. Handle Topic Edited
         else if (msg.forum_topic_edited) {
              this.logger.log(`📢 Topic Edited Manually: ${chatId} / ${msg.message_thread_id}`);
+             // NOTE: Telegram may send name OR icon_custom_emoji_id (or both)
+             // We pass whatever is available.
              await this.channelsService.syncTopicFromWebhook(botId, chatId, {
                 id: msg.message_thread_id,
                 name: msg.forum_topic_edited.name,
@@ -109,8 +119,18 @@ export class BotUpdatesController {
             await this.channelsService.updateTopicStatus(chatId, msg.message_thread_id, false);
         }
 
-        // G. 🚀 Passive Discovery: Detect Existing Topics via Regular Messages
-        else if (msg.message_thread_id) {
+        // G. General Topic Events (Usually ID 1)
+        else if (msg.general_forum_topic_hidden) {
+             this.logger.log(`🙈 General Topic Hidden in ${chatId}`);
+             // Optional: Mark topic #1 as hidden if you track it
+        }
+        else if (msg.general_forum_topic_unhidden) {
+             this.logger.log(`🐵 General Topic Unhidden in ${chatId}`);
+        }
+
+        // H. 🚀 Passive Discovery: Detect Existing Topics via Regular Messages
+        // ONLY if it is NOT a service message (to avoid double syncs)
+        else if (msg.message_thread_id && !msg.forum_topic_created && !msg.forum_topic_edited) {
              await this.channelsService.ensureTopicExists(botId, chatId, msg.message_thread_id);
         }
       }
