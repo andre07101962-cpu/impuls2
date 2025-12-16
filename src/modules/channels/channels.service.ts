@@ -237,43 +237,49 @@ export class ChannelsService {
     const channelId = chatObj.id.toString();
     this.logger.log(`Syncing channel ${chatObj.title} (${channelId}) for bot ${botId}`);
 
+    // Prepare default/fallback data from Webhook payload
+    let title = chatObj.title || 'Untitled';
+    let photoUrl = null;
+    let membersCount = 0;
+    let linkedChatId = null;
+
     try {
         const { token } = await this.botsService.getBotWithDecryptedToken(botId);
         const bot = new Telegraf(token);
 
-        const [chatInfo, membersCount] = await Promise.all([
-            bot.telegram.getChat(channelId),
-            bot.telegram.getChatMembersCount(channelId).catch(() => 0)
-        ]);
-
-        let photoUrl = null;
-        if (chatInfo.photo) {
-            try {
+        // Try to fetch full details. If it fails (Race Condition/403), use fallback.
+        try {
+            const chatInfo = await bot.telegram.getChat(channelId);
+            title = (chatInfo as any).title || title;
+            linkedChatId = (chatInfo as any).linked_chat_id 
+                ? (chatInfo as any).linked_chat_id.toString() 
+                : null;
+            
+            if (chatInfo.photo) {
                 const link = await bot.telegram.getFileLink(chatInfo.photo.big_file_id);
                 photoUrl = link.toString();
-            } catch (e) {
-                this.logger.warn(`Failed to fetch photo for channel ${channelId}: ${e.message}`);
             }
-        }
 
-        const linkedChatId = (chatInfo as any).linked_chat_id 
-            ? (chatInfo as any).linked_chat_id.toString() 
-            : null;
+            membersCount = await bot.telegram.getChatMembersCount(channelId).catch(() => 0);
+        } catch (apiError) {
+            this.logger.warn(`API Sync failed for ${channelId} (${apiError.message}). Using Webhook payload data.`);
+            // Proceed with data from chatObj
+        }
 
         const existing = await this.channelRepository.findOne({ where: { id: channelId } });
         
         if (existing) {
-            existing.title = chatObj.title;
-            existing.membersCount = membersCount;
+            existing.title = title;
+            existing.membersCount = membersCount > 0 ? membersCount : existing.membersCount;
             if (photoUrl) existing.photoUrl = photoUrl;
-            existing.linkedChatId = linkedChatId; // Sync linked chat
-            existing.isActive = true;
+            if (linkedChatId) existing.linkedChatId = linkedChatId;
+            existing.isActive = true; // Reactivate
             return this.channelRepository.save(existing);
         }
 
         const newChannel = this.channelRepository.create({
             id: channelId,
-            title: chatObj.title || 'Untitled',
+            title: title,
             photoUrl,
             membersCount,
             linkedChatId,
