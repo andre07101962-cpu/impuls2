@@ -18,13 +18,13 @@ export class BotUpdatesController {
   @HttpCode(200)
   @ApiOperation({ summary: 'Handle Telegram Webhook for User Bots' })
   async handleUpdates(@Param('botId') botId: string, @Body() update: any) {
-    // 1. 🔍 DEEP LOGGING: Print the exact payload from Telegram
+    // 1. 🔍 DEEP LOGGING: Print the exact payload from Telegram (Enable in Dev)
     if (process.env.NODE_ENV !== 'production' || true) { 
         this.logger.debug(`📥 WEBHOOK PAYLOAD [${botId}]: ${JSON.stringify(update, null, 2)}`);
     }
 
     try {
-      // 2. Handle 'my_chat_member' (Bot added/removed as Admin)
+      // 2. Handle 'my_chat_member' (Bot added/removed/promoted)
       if (update.my_chat_member) {
         const { chat, new_chat_member } = update.my_chat_member;
         
@@ -39,17 +39,24 @@ export class BotUpdatesController {
       }
 
       // 3. Handle 'channel_post' (New Post in Channel -> Trigger Sync)
-      // This ensures that if a Linked Chat is added LATER, the first post will pick it up.
       if (update.channel_post) {
           const post = update.channel_post;
-          const chatId = post.chat.id.toString();
           
-          // Only sync if we suspect metadata might need refresh (or just always for robustness)
-          // We pass the chat object directly to reuse the logic
+          // A. Regular Channel Sync
           await this.channelsService.registerChannelFromWebhook(botId, post.chat);
+
+          // B. Handle Channel Renaming (Service Message)
+          if (post.new_chat_title) {
+              this.logger.log(`📝 Channel Renamed: ${post.new_chat_title}`);
+              await this.channelsService.registerChannelFromWebhook(botId, { ...post.chat, title: post.new_chat_title });
+          }
+          if (post.new_chat_photo) {
+              this.logger.log(`📸 Channel Photo Changed`);
+              await this.channelsService.registerChannelFromWebhook(botId, post.chat); // Will fetch new photo URL
+          }
       }
 
-      // 4. Handle Messages & Service Events (Groups/Private)
+      // 4. Handle Messages & Service Events (Groups/Supergroups/Private)
       if (update.message) {
         const msg = update.message;
         const chatId = msg.chat.id.toString();
@@ -59,7 +66,17 @@ export class BotUpdatesController {
           await this.handleStartCommand(botId, chatId);
         }
 
-        // B. Handle Topic Creation (Manual creation in Telegram app)
+        // B. Handle Group/Supergroup Renaming (Service Message)
+        if (msg.new_chat_title) {
+             this.logger.log(`📝 Group Renamed: ${msg.new_chat_title}`);
+             await this.channelsService.registerChannelFromWebhook(botId, { ...msg.chat, title: msg.new_chat_title });
+        }
+        if (msg.new_chat_photo) {
+             this.logger.log(`📸 Group Photo Changed`);
+             await this.channelsService.registerChannelFromWebhook(botId, msg.chat);
+        }
+
+        // C. Handle Topic Creation
         if (msg.forum_topic_created) {
             this.logger.log(`📢 Topic Created Manually: ${msg.forum_topic_created.name} in ${chatId}`);
             await this.channelsService.syncTopicFromWebhook(botId, chatId, {
@@ -70,26 +87,31 @@ export class BotUpdatesController {
             });
         }
 
-        // C. Handle Topic Edited (Renamed/Icon changed)
-        if (msg.forum_topic_edited) {
+        // D. Handle Topic Edited
+        else if (msg.forum_topic_edited) {
              this.logger.log(`📢 Topic Edited Manually: ${chatId} / ${msg.message_thread_id}`);
              await this.channelsService.syncTopicFromWebhook(botId, chatId, {
                 id: msg.message_thread_id,
-                name: msg.forum_topic_edited.name, // Might be undefined if only icon changed
+                name: msg.forum_topic_edited.name,
                 iconCustomEmojiId: msg.forum_topic_edited.icon_custom_emoji_id
             });
         }
 
-        // D. Handle Topic Closed
-        if (msg.forum_topic_closed) {
+        // E. Handle Topic Closed
+        else if (msg.forum_topic_closed) {
             this.logger.log(`📢 Topic Closed: ${chatId} / ${msg.message_thread_id}`);
             await this.channelsService.updateTopicStatus(chatId, msg.message_thread_id, true);
         }
 
-        // E. Handle Topic Reopened
-        if (msg.forum_topic_reopened) {
+        // F. Handle Topic Reopened
+        else if (msg.forum_topic_reopened) {
             this.logger.log(`📢 Topic Reopened: ${chatId} / ${msg.message_thread_id}`);
             await this.channelsService.updateTopicStatus(chatId, msg.message_thread_id, false);
+        }
+
+        // G. 🚀 Passive Discovery: Detect Existing Topics via Regular Messages
+        else if (msg.message_thread_id) {
+             await this.channelsService.ensureTopicExists(botId, chatId, msg.message_thread_id);
         }
       }
 

@@ -125,6 +125,30 @@ export class ChannelsService {
 
   // === WEBHOOK SYNC HANDLERS (INBOUND) ===
 
+  async ensureTopicExists(botId: string, chatId: string, topicId: number) {
+      // 1. Find the parent channel/group
+      let channel = await this.channelRepository.findOne({ where: { linkedChatId: chatId } });
+      if (!channel) channel = await this.channelRepository.findOne({ where: { id: chatId } });
+
+      if (!channel) return;
+
+      // 2. Check if topic already known
+      const existing = await this.topicRepository.findOne({ 
+          where: { channelId: channel.id, telegramTopicId: topicId } 
+      });
+
+      if (!existing) {
+          this.logger.log(`👻 Discovered existing topic #${topicId} in ${channel.title}. Registering...`);
+          const newTopic = this.topicRepository.create({
+              channelId: channel.id,
+              telegramTopicId: topicId,
+              name: `Topic #${topicId} (Edit name to sync)`, // Placeholder name
+              isClosed: false
+          });
+          await this.topicRepository.save(newTopic);
+      }
+  }
+
   async syncTopicFromWebhook(botId: string, chatId: string, data: { id: number, name?: string, iconColor?: number, iconCustomEmojiId?: string }) {
       // Logic: chatId comes from Telegram. 
       // It could be the Channel ID (if it's a Forum Supergroup) OR the Linked Group ID (if it's a Channel+Group setup).
@@ -170,6 +194,12 @@ export class ChannelsService {
       const topic = await this.topicRepository.findOne({ 
           where: { channelId: channel.id, telegramTopicId: topicId } 
       });
+
+      // If topic doesn't exist but we got a close event, we might as well create it
+      if (!topic && isClosed) {
+          await this.syncTopicFromWebhook(channel.ownerBotId, chatId, { id: topicId, name: `Topic #${topicId}` });
+          return;
+      }
 
       if (topic) {
           topic.isClosed = isClosed;
