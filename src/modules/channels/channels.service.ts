@@ -50,8 +50,10 @@ export class ChannelsService {
     const bot = new Telegraf(token);
 
     try {
+        // Fix: Telegraf types for icon_color are strict unions of integers. 
+        // We cast to any to allow dynamic input from the API.
         const topic = await bot.telegram.createForumTopic(channel.linkedChatId, name, {
-            icon_color: iconColor,
+            icon_color: iconColor as any,
             icon_custom_emoji_id: iconEmojiId
         });
 
