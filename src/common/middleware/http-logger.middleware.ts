@@ -1,21 +1,19 @@
-
 import { Injectable, NestMiddleware, Logger } from '@nestjs/common';
-import { Request, Response, NextFunction } from 'express';
 
 @Injectable()
 export class HttpLoggerMiddleware implements NestMiddleware {
   private logger = new Logger('HTTP');
 
-  use(req: Request, res: Response, next: NextFunction) {
+  use(req: any, res: any, next: () => void) {
     const { method, originalUrl, body, query } = req;
     
     // Log Request
     this.logger.log(`📥 [${method}] ${originalUrl}`);
-    if (Object.keys(body).length > 0) {
+    if (body && Object.keys(body).length > 0) {
       // Pretty print body for better visibility in terminal
       console.log('   📦 Body:', JSON.stringify(body, null, 2));
     }
-    if (Object.keys(query).length > 0) {
+    if (query && Object.keys(query).length > 0) {
       console.log('   ❓ Query:', JSON.stringify(query, null, 2));
     }
 

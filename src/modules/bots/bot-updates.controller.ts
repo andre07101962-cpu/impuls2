@@ -1,3 +1,4 @@
+
 import { Controller, Post, Body, Param, HttpCode, Logger } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { BotsService } from './bots.service';
@@ -18,10 +19,8 @@ export class BotUpdatesController {
   @HttpCode(200)
   @ApiOperation({ summary: 'Handle Telegram Webhook for User Bots' })
   async handleUpdates(@Param('botId') botId: string, @Body() update: any) {
-    // 1. 🔍 DEEP LOGGING: Print the exact payload from Telegram (Enable in Dev)
-    if (process.env.NODE_ENV !== 'production' || true) { 
-        this.logger.debug(`📥 WEBHOOK PAYLOAD [${botId}]: ${JSON.stringify(update, null, 2)}`);
-    }
+    // 1. 🔍 DEEP LOGGING: Print the exact payload from Telegram (Always ON for debugging now)
+    this.logger.debug(`📥 WEBHOOK PAYLOAD [${botId}]: ${JSON.stringify(update, null, 2)}`);
 
     try {
       // 2. Handle 'my_chat_member' (Bot added/removed/promoted)

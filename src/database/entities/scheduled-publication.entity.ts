@@ -1,3 +1,4 @@
+
 import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, JoinColumn, CreateDateColumn, Index } from 'typeorm';
 import { Channel } from './channel.entity';
 import { Post } from './post.entity';
@@ -24,7 +25,13 @@ export class ScheduledPublication {
   @Column({ name: 'tg_message_id', type: 'bigint', nullable: true })
   tgMessageId: string;
 
-  @Column({ type: 'enum', enum: PublicationStatus, default: PublicationStatus.SCHEDULED })
+  // 🛠️ FIX: Explicitly name the enum 'v2' to avoid "type already exists" error during migration
+  @Column({ 
+    type: 'enum', 
+    enum: PublicationStatus, 
+    default: PublicationStatus.SCHEDULED,
+    enumName: 'publication_status_enum_v2' 
+  })
   status: PublicationStatus;
 
   // Track the Publishing Job (BullMQ)
