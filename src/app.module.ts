@@ -1,3 +1,4 @@
+
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -10,6 +11,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { BotsModule } from './modules/bots/bots.module';
 import { ChannelsModule } from './modules/channels/channels.module';
 import { PublisherModule } from './modules/publisher/publisher.module';
+import { MetaModule } from './modules/meta/meta.module';
 
 // Энтити (Таблицы)
 import { User } from './database/entities/user.entity';
@@ -98,6 +100,7 @@ import { ForumTopic } from './database/entities/forum-topic.entity';
     BotsModule,
     ChannelsModule,
     PublisherModule,
+    MetaModule,
   ],
   providers: [
     // 🛡️ GLOBAL GUARD: Активируем защиту от спама для всех эндпоинтов
