@@ -6,17 +6,6 @@ import { User, UserRole } from '../../database/entities/user.entity';
 import * as crypto from 'crypto';
 import { Buffer } from 'buffer';
 
-export interface TelegramUserDto {
-  id: string;
-  first_name?: string;
-  last_name?: string;
-  username?: string;
-  language_code?: string;
-  is_premium?: boolean;
-  photo_url?: string;
-  raw_data?: any;
-}
-
 @Injectable()
 export class AuthService {
   constructor(
@@ -26,31 +15,19 @@ export class AuthService {
 
   /**
    * 1. REGISTER / REFRESH
-   * Saves ALL Telegram Data.
    */
-  async registerOrRefreshToken(data: TelegramUserDto): Promise<string> {
-    let user = await this.userRepository.findOne({ where: { telegramId: data.id } });
+  async registerOrRefreshToken(telegramId: string): Promise<string> {
+    let user = await this.userRepository.findOne({ where: { telegramId } });
 
     if (!user) {
       user = this.userRepository.create({
-        telegramId: data.id,
+        telegramId,
         role: UserRole.USER,
       });
     }
 
-    // Update fields (Sync latest data from Telegram)
-    user.firstName = data.first_name || user.firstName;
-    user.lastName = data.last_name || user.lastName;
-    user.username = data.username || user.username;
-    user.languageCode = data.language_code || user.languageCode;
-    user.isPremium = data.is_premium || false;
-    user.rawData = data.raw_data; // Store full JSON
-    // Note: photo_url logic usually requires `getUserProfilePhotos` API call, 
-    // we store it if we have it, otherwise it's null.
-
     const rawToken = crypto.randomBytes(32).toString('hex');
     user.accessTokenHash = this.hashToken(rawToken);
-    
     await this.userRepository.save(user);
 
     return rawToken;
@@ -66,10 +43,7 @@ export class AuthService {
         user: {
             id: user.id,
             telegramId: user.telegramId,
-            username: user.username,
-            firstName: user.firstName,
-            role: user.role,
-            avatar: user.photoUrl
+            role: user.role
         }
     };
   }
@@ -78,8 +52,19 @@ export class AuthService {
    * 3. VERIFY SESSION (For Guard)
    */
   async verifySession(token: string): Promise<User> {
+    // We can't query by hash directly easily if we don't have the ID.
+    // However, for this simple arch, we assume the client might send ID or we iterate/lookup.
+    // OPTIMIZATION: In a real app, the token should be `ID:SECRET`. 
+    // Let's assume the frontend sends just the secret. We have to query users or change the token format.
+    // TO FIX: We will assume the user provides `TelegramID` in headers OR we scan (inefficient).
+    // BETTER: Let's stick to the security best practice: Token = `id.secret` encoded base64?
+    // FOR SIMPLICITY HERE: We hash the incoming token and look for it. 
+    // Note: This requires the hash to be unique (collision unlikely with SHA256).
+    
     const hashedInput = this.hashToken(token);
     
+    // We must find the user by this hash. 
+    // Since `accessTokenHash` is `select: false`, we need QueryBuilder.
     const user = await this.userRepository.createQueryBuilder('user')
       .addSelect('user.accessTokenHash')
       .where('user.accessTokenHash = :hash', { hash: hashedInput })
@@ -87,6 +72,7 @@ export class AuthService {
 
     if (!user) return null;
 
+    // Strip sensitive data before returning
     delete user.accessTokenHash;
     return user;
   }
