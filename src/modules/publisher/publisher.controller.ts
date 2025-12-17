@@ -1,3 +1,4 @@
+
 import { Controller, Post, Patch, Get, Delete, Body, Param, UseGuards, BadRequestException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { PublisherService } from './publisher.service';
@@ -13,32 +14,24 @@ enum PostType {
   PAID_MEDIA = 'paid_media',
   POLL = 'poll',
   DOCUMENT = 'document',
-}
-
-// Helper DTO for deeper validation (Optional but recommended)
-class ContentPayloadDto {
-    @IsOptional()
-    text?: string;
-    
-    @IsOptional()
-    media?: any;
-
-    @IsOptional()
-    question?: string; // For Polls
-
-    @IsOptional()
-    poll_options?: string[]; // For Polls
+  AUDIO = 'audio',
+  VOICE = 'voice',
+  VIDEO_NOTE = 'video_note',
+  LOCATION = 'location',
+  CONTACT = 'contact',
+  STICKER = 'sticker',
+  COPY = 'copy',
+  FORWARD = 'forward',
 }
 
 class SchedulePostDto {
   @ApiProperty({ 
     example: { 
-        text: "Hidden Content", 
+        text: "Hello World", 
         media: ["https://..."], 
-        paid_config: { star_count: 50 },
-        options: { has_spoiler: true, pin: true }
+        options: { has_spoiler: true, pin: true, show_caption_above_media: true }
     },
-    description: "Supports standard posts, stories, polls, documents and paid media objects"
+    description: "Flexible payload depending on type"
   })
   @IsObject()
   content: any;
@@ -57,7 +50,7 @@ class SchedulePostDto {
   @IsNotEmpty()
   publishAt: string;
 
-  @ApiProperty({ example: '2025-12-26T10:00:00.000Z', required: false, description: 'Auto-delete time (Self-destruct)' })
+  @ApiProperty({ example: '2025-12-26T10:00:00.000Z', required: false })
   @IsString()
   @IsOptional()
   deleteAt?: string;
@@ -69,7 +62,7 @@ class EditPostDto {
   @IsOptional()
   content?: any;
 
-  @ApiProperty({ enum: PostType, required: false, description: 'Allow changing type during edit' })
+  @ApiProperty({ enum: PostType, required: false })
   @IsOptional()
   @IsEnum(PostType)
   type?: PostType;
@@ -89,7 +82,7 @@ class EditPostDto {
   @IsOptional()
   deleteAt?: string;
 
-  @ApiProperty({ required: false, description: 'If true, attempts to edit the message in Telegram immediately (if already published)' })
+  @ApiProperty({ required: false })
   @IsBoolean()
   @IsOptional()
   isLiveEdit?: boolean;
@@ -109,12 +102,9 @@ export class PublisherController {
   }
 
   @Post('schedule')
-  @ApiOperation({ summary: 'Schedule a post (Feed, Story, Poll, Doc, or Paid Media)' })
+  @ApiOperation({ summary: 'Schedule any type of Telegram content' })
   schedule(@Body() dto: SchedulePostDto) {
-    // 🛡️ LOGIC VALIDATION: Prevent incompatible types before DB save
     this.validateContent(dto.content, dto.type || PostType.POST);
-
-    // Inject the 'type' into the content payload for persistence if not already there
     const contentWithType = { ...dto.content, type: dto.type || PostType.POST };
     return this.publisherService.schedulePost(contentWithType, dto.channelIds, dto.publishAt, dto.deleteAt);
   }
@@ -122,7 +112,6 @@ export class PublisherController {
   @Patch('schedule/:id')
   @ApiOperation({ summary: 'Edit a scheduled post (Time, Content, or Channels). Supports Live Edit.' })
   edit(@Param('id') id: string, @Body() dto: EditPostDto) {
-    // Adapter: If type is provided at root, ensure it's merged into content for the service logic
     if (dto.type && dto.content) {
         this.validateContent(dto.content, dto.type);
         dto.content.type = dto.type;
@@ -144,7 +133,6 @@ export class PublisherController {
 
       if (type === PostType.POLL) {
           if (!content.question) throw new BadRequestException('Poll must have a question');
-          // Check for 'poll_options' specifically, NOT 'options'
           if (!content.poll_options || !Array.isArray(content.poll_options) || content.poll_options.length < 2) {
               throw new BadRequestException('Poll must have at least 2 poll_options');
           }
@@ -156,6 +144,17 @@ export class PublisherController {
       }
       if (type === PostType.STORY) {
           if (!content.media) throw new BadRequestException('Story must have media');
+      }
+      if (type === PostType.COPY || type === PostType.FORWARD) {
+          if (!content.from_chat_id || !content.message_id) {
+              throw new BadRequestException('Copy/Forward must have from_chat_id and message_id');
+          }
+      }
+      if (type === PostType.LOCATION) {
+           if (!content.latitude || !content.longitude) throw new BadRequestException('Location requires latitude and longitude');
+      }
+      if (type === PostType.CONTACT) {
+           if (!content.phone_number || !content.first_name) throw new BadRequestException('Contact requires phone_number and first_name');
       }
   }
 }

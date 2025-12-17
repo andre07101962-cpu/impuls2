@@ -1,3 +1,4 @@
+
 import { Injectable, BadRequestException, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -219,9 +220,9 @@ export class ChannelsService {
       }
   }
 
-  // === ADMIN TOOLS ===
+  // === ADMIN TOOLS & GROWTH ===
 
-  async createInviteLink(userId: string, botId: string, channelId: string, name?: string) {
+  async createInviteLink(userId: string, botId: string, channelId: string, name?: string, expireDate?: number, limit?: number) {
      const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
      const bot = new Telegraf(token);
      await this.verifyChannelAccess(userId, channelId, botId);
@@ -229,11 +230,26 @@ export class ChannelsService {
      try {
          const invite = await bot.telegram.createChatInviteLink(channelId, {
              name: name || `Impulse Gen ${new Date().toISOString().split('T')[0]}`,
+             expire_date: expireDate,
+             member_limit: limit,
              creates_join_request: false
          });
          return invite;
      } catch (e) {
          throw new BadRequestException(`Telegram Error: ${e.message}`);
+     }
+  }
+
+  async revokeInviteLink(userId: string, botId: string, channelId: string, inviteLink: string) {
+     const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+     const bot = new Telegraf(token);
+     await this.verifyChannelAccess(userId, channelId, botId);
+
+     try {
+         const result = await bot.telegram.revokeChatInviteLink(channelId, inviteLink);
+         return result;
+     } catch (e) {
+         throw new BadRequestException(`Failed to revoke link: ${e.message}`);
      }
   }
 
@@ -247,14 +263,113 @@ export class ChannelsService {
             await bot.telegram.setChatTitle(channelId, updates.title);
             channel.title = updates.title;
         }
-        if (updates.description) {
+        if (updates.description !== undefined) {
             await bot.telegram.setChatDescription(channelId, updates.description);
+            channel.description = updates.description;
         }
         await this.channelRepository.save(channel);
         return { success: true, message: 'Profile updated' };
      } catch (e) {
          throw new BadRequestException(`Failed to update profile: ${e.message}. Bot needs Administrator rights.`);
      }
+  }
+
+  async setChatPermissions(userId: string, botId: string, channelId: string, permissions: any) {
+    const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+    const bot = new Telegraf(token);
+    await this.verifyChannelAccess(userId, channelId, botId);
+
+    try {
+        await bot.telegram.setChatPermissions(channelId, permissions);
+        return { success: true };
+    } catch (e) {
+        throw new BadRequestException(`Failed to set permissions: ${e.message}`);
+    }
+  }
+
+  // === MODERATION (NEW) ===
+
+  async getChatAdmins(userId: string, botId: string, channelId: string) {
+     const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+     const bot = new Telegraf(token);
+     await this.verifyChannelAccess(userId, channelId, botId);
+     
+     try {
+         return await bot.telegram.getChatAdministrators(channelId);
+     } catch (e) {
+         throw new BadRequestException(`Failed to fetch admins: ${e.message}`);
+     }
+  }
+
+  async banUser(userId: string, botId: string, channelId: string, targetUserId: number, untilDate?: number) {
+      const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+      const bot = new Telegraf(token);
+      await this.verifyChannelAccess(userId, channelId, botId);
+
+      try {
+          await bot.telegram.banChatMember(channelId, targetUserId, untilDate);
+          return { success: true, message: `User ${targetUserId} banned.` };
+      } catch (e) {
+          throw new BadRequestException(`Failed to ban user: ${e.message}`);
+      }
+  }
+
+  async unbanUser(userId: string, botId: string, channelId: string, targetUserId: number) {
+      const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+      const bot = new Telegraf(token);
+      await this.verifyChannelAccess(userId, channelId, botId);
+
+      try {
+          await bot.telegram.unbanChatMember(channelId, targetUserId);
+          return { success: true, message: `User ${targetUserId} unbanned.` };
+      } catch (e) {
+          throw new BadRequestException(`Failed to unban user: ${e.message}`);
+      }
+  }
+
+  async restrictUser(userId: string, botId: string, channelId: string, targetUserId: number, permissions: any, untilDate?: number) {
+      const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+      const bot = new Telegraf(token);
+      await this.verifyChannelAccess(userId, channelId, botId);
+
+      try {
+          // Telegraf restrictChatMember signature: chat_id, user_id, permissions (with params)
+          // Fix for "Expected 3 arguments, but got 4"
+          await bot.telegram.restrictChatMember(channelId, targetUserId, { ...permissions, until_date: untilDate } as any);
+          return { success: true, message: `User ${targetUserId} restricted.` };
+      } catch (e) {
+          throw new BadRequestException(`Failed to restrict user: ${e.message}`);
+      }
+  }
+
+  async promoteAdmin(userId: string, botId: string, channelId: string, targetUserId: number, customTitle: string, permissions: any) {
+      const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+      const bot = new Telegraf(token);
+      await this.verifyChannelAccess(userId, channelId, botId);
+
+      try {
+          await bot.telegram.promoteChatMember(channelId, targetUserId, { ...permissions, is_anonymous: false });
+          if (customTitle) {
+              await bot.telegram.setChatAdministratorCustomTitle(channelId, targetUserId, customTitle);
+          }
+          return { success: true, message: `User ${targetUserId} promoted.` };
+      } catch (e) {
+          throw new BadRequestException(`Failed to promote user: ${e.message}`);
+      }
+  }
+
+  async leaveChannel(userId: string, botId: string, channelId: string) {
+      const { token } = await this.botsService.getBotWithDecryptedToken(botId, userId);
+      const bot = new Telegraf(token);
+      const channel = await this.verifyChannelAccess(userId, channelId, botId);
+
+      try {
+          await bot.telegram.leaveChat(channelId);
+          await this.channelRepository.update(channelId, { isActive: false });
+          return { success: true, message: 'Bot left the channel' };
+      } catch (e) {
+          throw new BadRequestException(`Failed to leave chat: ${e.message}`);
+      }
   }
 
   // === HEALTH CHECKS & SYNC ===
@@ -289,6 +404,7 @@ export class ChannelsService {
         if (channel) {
             channel.title = (chatInfo as any).title;
             channel.username = (chatInfo as any).username;
+            channel.description = (chatInfo as any).description; // Sync description
             channel.type = (chatInfo as any).type;
             channel.isForum = !!(chatInfo as any).is_forum;
             channel.membersCount = membersCount;
@@ -327,6 +443,7 @@ export class ChannelsService {
 
     let title = chatObj.title || 'Untitled';
     let photoUrl = null;
+    let description = chatObj.description || null;
     let membersCount = 0;
     
     let linkedChatId = existing ? existing.linkedChatId : null;
@@ -345,6 +462,7 @@ export class ChannelsService {
             
             title = fullChat.title || title;
             username = fullChat.username || username;
+            description = fullChat.description || description; // Get bio
             type = fullChat.type; 
             isForum = !!fullChat.is_forum;
 
@@ -375,6 +493,7 @@ export class ChannelsService {
         if (existing) {
             existing.title = title;
             existing.username = username;
+            existing.description = description;
             existing.type = type;
             existing.isForum = isForum;
             existing.membersCount = membersCount > 0 ? membersCount : existing.membersCount;
@@ -390,6 +509,7 @@ export class ChannelsService {
             id: channelId,
             title,
             username,
+            description,
             type,
             isForum,
             photoUrl,

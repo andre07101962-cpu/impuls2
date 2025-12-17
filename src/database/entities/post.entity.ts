@@ -1,12 +1,23 @@
+
 import { Entity, Column, PrimaryGeneratedColumn, OneToMany, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 import { ScheduledPublication } from './scheduled-publication.entity';
 
 export enum PostType {
-  POST = 'post',             // Standard Feed Post (Text/Image/Video)
+  POST = 'post',             // Standard Feed Post (Text/Image/Video/Album)
   STORY = 'story',           // Telegram Story
   PAID_MEDIA = 'paid_media', // Hidden behind Stars
   POLL = 'poll',             // Quiz or Regular Poll
   DOCUMENT = 'document',     // Files (PDF, ZIP, etc)
+  
+  // 🆕 NEW TYPES
+  AUDIO = 'audio',           // Music/Podcast
+  VOICE = 'voice',           // Voice Note (.ogg)
+  VIDEO_NOTE = 'video_note', // Circle Video
+  LOCATION = 'location',     // Geo Point
+  CONTACT = 'contact',       // vCard
+  STICKER = 'sticker',       // Static/Animated Sticker
+  COPY = 'copy',             // copyMessage (Content Stealer)
+  FORWARD = 'forward',       // forwardMessage (Repost with credit)
 }
 
 @Entity('posts')
@@ -18,33 +29,29 @@ export class Post {
   type: PostType;
 
   /**
-   * Payload Structure:
+   * Payload Structure Updates:
    * 
    * Common Options:
    *   options: {
    *     disable_notification: boolean,
    *     protect_content: boolean,
    *     has_spoiler: boolean,
-   *     pin: boolean // <--- NEW: Pin after posting
+   *     show_caption_above_media: boolean, // <--- NEW
+   *     message_effect_id: string, // <--- NEW (Premium effects)
+   *     pin: boolean
    *   }
    * 
-   * Type: POLL
-   *   content: {
-   *     question: string,
-   *     poll_options: string[], // ["Yes", "No"] (Renamed from options to avoid collision)
-   *     poll_config: {
-   *       is_anonymous: boolean,
-   *       allows_multiple_answers: boolean,
-   *       type: 'regular' | 'quiz',
-   *       correct_option_id: number // if quiz
-   *     }
-   *   }
+   * Type: AUDIO
+   *   content: { media: url, performer: string, title: string, thumbnail: url }
    * 
-   * Type: DOCUMENT
-   *   content: {
-   *     media: string, // URL to file
-   *     text: string // Caption
-   *   }
+   * Type: LOCATION
+   *   content: { latitude: float, longitude: float, address?: string }
+   * 
+   * Type: CONTACT
+   *   content: { phone_number: string, first_name: string, last_name?: string }
+   * 
+   * Type: COPY / FORWARD
+   *   content: { from_chat_id: string, message_id: number }
    */
   @Column({ name: 'content_payload', type: 'jsonb' })
   contentPayload: any;

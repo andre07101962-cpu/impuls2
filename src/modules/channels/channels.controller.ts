@@ -1,7 +1,8 @@
+
 import { Controller, Post, Get, Patch, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiProperty, ApiBearerAuth } from '@nestjs/swagger';
 import { ChannelsService } from './channels.service';
-import { IsString, IsNotEmpty, IsOptional, IsInt, IsBoolean } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsInt, IsBoolean, IsObject } from 'class-validator';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { CurrentUser } from '../../common/decorators/user.decorator';
 import { User } from '../../database/entities/user.entity';
@@ -69,6 +70,16 @@ class CreateInviteDto {
   @IsString()
   @IsOptional()
   name?: string;
+
+  @ApiProperty({ required: false })
+  @IsInt()
+  @IsOptional()
+  expireDate?: number;
+
+  @ApiProperty({ required: false })
+  @IsInt()
+  @IsOptional()
+  limit?: number;
 }
 
 class UpdateProfileDto {
@@ -156,6 +167,59 @@ class TopicActionDto {
   channelId: string;
 }
 
+// === MODERATION DTOs ===
+
+class ModerationActionDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  botId: string;
+
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  channelId: string;
+
+  @ApiProperty()
+  @IsInt()
+  @IsNotEmpty()
+  targetUserId: number;
+}
+
+class BanUserDto extends ModerationActionDto {
+  @ApiProperty({ required: false })
+  @IsInt()
+  @IsOptional()
+  untilDate?: number;
+}
+
+class PromoteUserDto extends ModerationActionDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  customTitle?: string;
+
+  @ApiProperty()
+  @IsObject()
+  permissions: any;
+}
+
+class SetPermissionsDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  botId: string;
+
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  channelId: string;
+
+  @ApiProperty()
+  @IsObject()
+  permissions: any;
+}
+
 @ApiTags('Channels')
 @ApiBearerAuth()
 @UseGuards(AuthGuard)
@@ -178,7 +242,7 @@ export class ChannelsController {
   @Post('invite-link')
   @ApiOperation({ summary: 'Create a tracked invite link' })
   async createInvite(@Body() dto: CreateInviteDto, @CurrentUser() user: User) {
-    return this.channelsService.createInviteLink(user.id, dto.botId, dto.channelId, dto.name);
+    return this.channelsService.createInviteLink(user.id, dto.botId, dto.channelId, dto.name, dto.expireDate, dto.limit);
   }
 
   @Patch('profile')
@@ -188,6 +252,12 @@ export class ChannelsController {
       title: dto.title,
       description: dto.description
     });
+  }
+
+  @Post('permissions')
+  @ApiOperation({ summary: 'Set Global Chat Permissions (Groups only)' })
+  async setPermissions(@Body() dto: SetPermissionsDto, @CurrentUser() user: User) {
+      return this.channelsService.setChatPermissions(user.id, dto.botId, dto.channelId, dto.permissions);
   }
 
   @Post('sync')
@@ -206,6 +276,43 @@ export class ChannelsController {
   @ApiOperation({ summary: 'Save channel to DB' })
   add(@Body() dto: AddChannelDto) {
     return this.channelsService.addChannel(dto.botId, dto.channelId, dto.title);
+  }
+
+  // === MODERATION ===
+
+  @Get(':channelId/admins')
+  @ApiOperation({ summary: 'Get Admins (Live from Telegram)' })
+  async getAdmins(@Param('channelId') channelId: string, @CurrentUser() user: User, @Body() body: { botId: string }) {
+      // NOTE: Passing botId via Query or Body for GET is non-standard but required for multi-bot ownership check
+      // Ideally, pass ?botId=...
+      // For simplicity here assuming body or we can assume user has only one bot for this channel (expensive lookup)
+      // Implementation assumes frontend sends botId in body for now (though GET body is discouraged)
+      // BETTER: pass ?botId=XYZ in query params.
+      return this.channelsService.getChatAdmins(user.id, body.botId, channelId);
+  }
+
+  @Post('ban')
+  @ApiOperation({ summary: 'Ban a user from channel/group' })
+  async ban(@Body() dto: BanUserDto, @CurrentUser() user: User) {
+      return this.channelsService.banUser(user.id, dto.botId, dto.channelId, dto.targetUserId, dto.untilDate);
+  }
+
+  @Post('unban')
+  @ApiOperation({ summary: 'Unban a user' })
+  async unban(@Body() dto: ModerationActionDto, @CurrentUser() user: User) {
+      return this.channelsService.unbanUser(user.id, dto.botId, dto.channelId, dto.targetUserId);
+  }
+
+  @Post('promote')
+  @ApiOperation({ summary: 'Promote a user to Admin' })
+  async promote(@Body() dto: PromoteUserDto, @CurrentUser() user: User) {
+      return this.channelsService.promoteAdmin(user.id, dto.botId, dto.channelId, dto.targetUserId, dto.customTitle, dto.permissions);
+  }
+
+  @Post('leave')
+  @ApiOperation({ summary: 'Bot leaves the channel' })
+  async leave(@Body() dto: TopicActionDto, @CurrentUser() user: User) {
+      return this.channelsService.leaveChannel(user.id, dto.botId, dto.channelId);
   }
 
   // === TOPICS (FORUMS) ===

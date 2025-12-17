@@ -23,6 +23,9 @@ export class Channel {
   @Column({ nullable: true })
   username: string;
 
+  @Column({ type: 'text', nullable: true })
+  description: string;
+
   @Column({ type: 'enum', enum: ChannelType, default: ChannelType.CHANNEL })
   type: ChannelType;
 

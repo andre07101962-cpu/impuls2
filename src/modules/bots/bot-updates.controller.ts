@@ -58,6 +58,11 @@ export class BotUpdatesController {
               this.logger.log(`🗑️ Channel Photo Deleted`);
               await this.channelsService.updateChannelPhoto(post.chat.id.toString(), null);
           }
+          // C. Handle Pins (Channel)
+          if (post.pinned_message) {
+              this.logger.log(`📌 Message Pinned in Channel ${post.chat.id}: ${post.pinned_message.message_id}`);
+              // TODO: If you want to store the pinned ID, extend ChannelsService.updateChannelPin(...)
+          }
       }
 
       // 4. Handle Messages & Service Events (Groups/Supergroups/Private)
@@ -128,7 +133,13 @@ export class BotUpdatesController {
              this.logger.log(`🐵 General Topic Unhidden in ${chatId}`);
         }
 
-        // H. 🚀 Passive Discovery: Detect Existing Topics via Regular Messages
+        // H. Pinned Messages in Topics/Groups
+        else if (msg.pinned_message) {
+             this.logger.log(`📌 Message Pinned in Group/Topic ${chatId}`);
+             // If is_topic_message is true, we could link this to the specific forum topic if we tracked Pins in the ForumTopic entity
+        }
+
+        // I. 🚀 Passive Discovery: Detect Existing Topics via Regular Messages
         // ONLY if it is NOT a service message (to avoid double syncs)
         else if (msg.message_thread_id && !msg.forum_topic_created && !msg.forum_topic_edited) {
              await this.channelsService.ensureTopicExists(botId, chatId, msg.message_thread_id);

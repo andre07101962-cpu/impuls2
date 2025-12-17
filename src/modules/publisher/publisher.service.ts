@@ -88,10 +88,8 @@ export class PublisherService {
           });
           await this.publicationRepository.save(pub);
           
-          // 1. Schedule Publication
           await this.scheduleJob(pub, 'publish', publishDate);
           
-          // 2. Schedule Auto-Deletion (if requested)
           if (deleteDate) {
               await this.scheduleJob(pub, 'delete', deleteDate);
           }
@@ -130,17 +128,15 @@ export class PublisherService {
 
     // === LIVE EDITING LOGIC (Telegram API) ===
     if (dto.isLiveEdit) {
-         // 1. Content Update
          if (dto.content) {
              await this.performLiveEdit(post, dto.content);
-             post.contentPayload = dto.content;
+             post.contentPayload = { ...post.contentPayload, ...dto.content };
              await this.postRepository.save(post);
          }
          
-         // 2. Timer Update (Only deleteAt is allowed for Live Posts)
          if (dto.deleteAt !== undefined) {
              const newDeleteDate = dto.deleteAt ? new Date(dto.deleteAt) : null;
-             await this.updatePublicationsTimers(post.id, null, newDeleteDate); // Pass null for publishAt to ignore it
+             await this.updatePublicationsTimers(post.id, null, newDeleteDate); 
          }
 
          return { success: true, message: 'Live edit processed' };
@@ -152,17 +148,12 @@ export class PublisherService {
         throw new BadRequestException('Cannot reschedule: One or more channels have already published. Use isLiveEdit=true to update content.');
     }
 
-    // 1. Update Content
     if (dto.content) {
         post.contentPayload = dto.content;
         if (dto.content.type) post.type = dto.content.type;
         await this.postRepository.save(post);
     }
 
-    // 2. Handle Channels (Add/Remove)
-    // NOTE: Not implemented yet. We assume channels are constant for now.
-
-    // 3. Update Time (Publish & Delete)
     const newPublishDate = dto.publishAt ? new Date(dto.publishAt) : undefined;
     const newDeleteDate = dto.deleteAt !== undefined ? (dto.deleteAt ? new Date(dto.deleteAt) : null) : undefined;
 
@@ -182,17 +173,20 @@ export class PublisherService {
       if (!post) throw new NotFoundException('Post not found');
 
       for (const pub of post.publications) {
-          // Cancel Publish Job
           if (pub.jobId) await this.removeJob(pub.jobId);
-          // Cancel Delete Job
           if (pub.deleteJobId) await this.removeJob(pub.deleteJobId);
 
-          // If published, try to delete from Telegram immediately
           if (pub.status === PublicationStatus.PUBLISHED && pub.tgMessageId) {
               try {
                   const { token } = await this.botsService.getBotWithDecryptedToken(pub.channel.ownerBotId);
                   const bot = new Telegraf(token);
-                  await bot.telegram.deleteMessage(pub.channel.id, parseInt(pub.tgMessageId));
+                  
+                  // Handle Topic Target for Deletion
+                  let targetChatId = pub.channel.id;
+                  if (pub.channel.isForum) targetChatId = pub.channel.id;
+                  else if (pub.channel.linkedChatId && post.contentPayload?.options?.topic_id) targetChatId = pub.channel.linkedChatId;
+
+                  await bot.telegram.deleteMessage(targetChatId, parseInt(pub.tgMessageId));
               } catch (e) {
                   this.logger.warn(`Failed to delete message ${pub.tgMessageId}: ${e.message}`);
               }
@@ -205,38 +199,26 @@ export class PublisherService {
 
   // === HELPERS ===
 
-  /**
-   * Updates Redis Timers for all publications of a post.
-   * Pass `undefined` to skip a field, `null` to clear it (for deleteAt).
-   */
   private async updatePublicationsTimers(postId: string, newPublishAt?: Date, newDeleteAt?: Date | null) {
     const pubs = await this.publicationRepository.find({ where: { postId } });
 
     for (const pub of pubs) {
-        // Update Publish Timer
         if (newPublishAt) {
             if (pub.jobId) await this.removeJob(pub.jobId);
             pub.publishAt = newPublishAt;
             await this.publicationRepository.save(pub);
-            // Only schedule if it's in the future (though for SCHEDULED posts it should be)
             if (pub.status === PublicationStatus.SCHEDULED) {
                 await this.scheduleJob(pub, 'publish', newPublishAt);
             }
         }
 
-        // Update Delete Timer
         if (newDeleteAt !== undefined) {
-            // 1. Remove existing job
             if (pub.deleteJobId) {
                 await this.removeJob(pub.deleteJobId);
                 pub.deleteJobId = null;
             }
-
-            // 2. Set new date
             pub.deleteAt = newDeleteAt;
             await this.publicationRepository.save(pub);
-
-            // 3. Schedule new job if date exists
             if (newDeleteAt) {
                  await this.scheduleJob(pub, 'delete', newDeleteAt);
             }
@@ -289,28 +271,37 @@ export class PublisherService {
               try {
                   const { token } = await this.botsService.getBotWithDecryptedToken(pub.channel.ownerBotId);
                   const bot = new Telegraf(token);
-                  
+                  const msgId = parseInt(pub.tgMessageId);
+                  const chatId = pub.channel.isForum ? pub.channel.id : (pub.channel.linkedChatId || pub.channel.id);
+
+                  // 1. Text / Caption Edit
                   if (newContent.text) {
                       if (post.type === PostType.POST && !post.contentPayload.media) {
-                          // Text Message
-                          await bot.telegram.editMessageText(
-                              pub.channel.id, 
-                              parseInt(pub.tgMessageId), 
-                              undefined, 
-                              newContent.text, 
-                              { parse_mode: 'HTML' }
-                          );
-                      } else if (post.contentPayload.media || post.type === PostType.DOCUMENT) {
-                          // Caption (Media or Document)
-                          await bot.telegram.editMessageCaption(
-                              pub.channel.id, 
-                              parseInt(pub.tgMessageId), 
-                              undefined, 
-                              newContent.text, 
-                              { parse_mode: 'HTML' }
-                          );
+                          await bot.telegram.editMessageText(chatId, msgId, undefined, newContent.text, { parse_mode: 'HTML' });
+                      } else {
+                          await bot.telegram.editMessageCaption(chatId, msgId, undefined, newContent.text, { parse_mode: 'HTML' });
                       }
                   }
+
+                  // 2. Buttons Edit (ReplyMarkup)
+                  if (newContent.buttons !== undefined) {
+                      // Pass empty object for no buttons, or structure for new buttons
+                      const reply_markup = newContent.buttons ? { inline_keyboard: newContent.buttons } : undefined;
+                      await bot.telegram.editMessageReplyMarkup(chatId, msgId, undefined, reply_markup);
+                  }
+
+                  // 3. Media Edit (Basic implementation for Photo/Video switch)
+                  if (newContent.media && (post.type === PostType.POST)) {
+                       const mediaUrl = Array.isArray(newContent.media) ? newContent.media[0] : newContent.media;
+                       const type = mediaUrl.endsWith('.mp4') ? 'video' : 'photo';
+                       await bot.telegram.editMessageMedia(chatId, msgId, undefined, {
+                           type,
+                           media: mediaUrl,
+                           caption: newContent.text || post.contentPayload.text,
+                           parse_mode: 'HTML'
+                       });
+                  }
+
               } catch (e) {
                   this.logger.error(`Live Edit failed for ${pub.id}: ${e.message}`);
               }
