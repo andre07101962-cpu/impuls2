@@ -1,10 +1,13 @@
 
-import { Module } from '@nestjs/common';
+import { Module, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
+
+// Middleware
+import { HttpLoggerMiddleware } from './common/middleware/http-logger.middleware';
 
 // Модули
 import { AuthModule } from './modules/auth/auth.module';
@@ -61,7 +64,7 @@ import { ForumTopic } from './database/entities/forum-topic.entity';
             ScheduledPublication, Campaign, Participant, AdSlot,
             ForumTopic
           ],
-          synchronize: false, 
+          synchronize: true, // ⚠️ CHANGED TO TRUE TEMPORARILY TO SYNC NEW USER COLUMNS
           ssl: { rejectUnauthorized: false },
           extra: {
             // ⚠️ MEMORY OPTIMIZATION: Reduced pool for Free Tier (512MB RAM)
@@ -110,4 +113,10 @@ import { ForumTopic } from './database/entities/forum-topic.entity';
     },
   ],
 })
-export class AppModule {}
+export class AppModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(HttpLoggerMiddleware)
+      .forRoutes({ path: '*', method: RequestMethod.ALL });
+  }
+}

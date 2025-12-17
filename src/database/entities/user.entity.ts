@@ -1,3 +1,4 @@
+
 import { Entity, Column, PrimaryGeneratedColumn, OneToMany, CreateDateColumn, UpdateDateColumn, Index } from 'typeorm';
 import { UserBot } from './user-bot.entity';
 
@@ -13,6 +14,30 @@ export class User {
 
   @Column({ type: 'bigint', unique: true, name: 'telegram_id' })
   telegramId: string;
+
+  // === NEW FIELDS START ===
+  @Column({ nullable: true, name: 'first_name' })
+  firstName: string;
+
+  @Column({ nullable: true, name: 'last_name' })
+  lastName: string;
+
+  @Column({ nullable: true })
+  username: string;
+
+  @Column({ nullable: true, name: 'language_code' })
+  languageCode: string;
+
+  @Column({ name: 'is_premium', default: false })
+  isPremium: boolean;
+
+  @Column({ name: 'photo_url', nullable: true })
+  photoUrl: string;
+
+  // Store the raw Telegram JSON response here for 100% data retention
+  @Column({ type: 'jsonb', name: 'raw_data', default: {} })
+  rawData: any;
+  // === NEW FIELDS END ===
 
   @Column({ type: 'enum', enum: UserRole, default: UserRole.USER })
   role: UserRole;
