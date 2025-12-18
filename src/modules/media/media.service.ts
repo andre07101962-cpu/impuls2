@@ -17,16 +17,21 @@ export class MediaService {
     this.bucketName = this.configService.get<string>('SUPABASE_BUCKET') || 'impulse-media';
 
     if (!this.supabaseUrl || !this.supabaseKey) {
-      this.logger.error('❌ Supabase configuration is missing!');
+      this.logger.error('❌ Supabase configuration is missing! Check SUPABASE_URL and SUPABASE_KEY in .env');
     }
   }
 
-  // 🛠️ FIX: Using 'any' for file type to resolve "Cannot find namespace Express" error
+  /**
+   * Uploads file to Supabase Storage using REST API
+   */
   async uploadFile(file: any, userId: string): Promise<string> {
     if (!file) throw new BadRequestException('No file provided');
+    if (!this.supabaseUrl || !this.supabaseKey) {
+      throw new BadRequestException('Storage service not configured');
+    }
 
     // 1. Generate unique path: users/userId/uuid-filename.ext
-    const fileExt = file.originalname.split('.').pop();
+    const fileExt = file.originalname?.split('.').pop() || 'bin';
     const fileName = `${uuidv4()}.${fileExt}`;
     const filePath = `users/${userId}/${fileName}`;
 
@@ -34,7 +39,9 @@ export class MediaService {
       // 2. Upload to Supabase Storage via REST API
       const uploadUrl = `${this.supabaseUrl}/storage/v1/object/${this.bucketName}/${filePath}`;
       
-      await axios.post(uploadUrl, file.buffer, {
+      this.logger.debug(`Uploading to: ${uploadUrl}`);
+
+      const response = await axios.post(uploadUrl, file.buffer, {
         headers: {
           'Authorization': `Bearer ${this.supabaseKey}`,
           'Content-Type': file.mimetype,
@@ -43,14 +50,22 @@ export class MediaService {
       });
 
       // 3. Construct Public URL
-      // Ensure the bucket is set to "Public" in Supabase Dashboard
       const publicUrl = `${this.supabaseUrl}/storage/v1/object/public/${this.bucketName}/${filePath}`;
       
-      this.logger.log(`✅ File uploaded: ${publicUrl}`);
+      this.logger.log(`✅ File uploaded successfully: ${publicUrl}`);
       return publicUrl;
-    } catch (error) {
-      this.logger.error(`❌ Upload failed: ${error.message}`);
-      throw new BadRequestException('Failed to upload file to storage');
+    } catch (error: any) {
+      // 🔍 Специфичный лог ошибки от Supabase
+      const errorDetail = error.response?.data?.message || error.response?.data?.error || error.message;
+      const statusCode = error.response?.status;
+
+      this.logger.error(`❌ Supabase Upload Failed [${statusCode}]: ${JSON.stringify(errorDetail)}`);
+      
+      if (statusCode === 400) {
+        throw new BadRequestException(`Storage Error: ${errorDetail}. Possible cause: Bucket '${this.bucketName}' does not exist.`);
+      }
+      
+      throw new BadRequestException(`Failed to upload file: ${errorDetail}`);
     }
   }
 }
